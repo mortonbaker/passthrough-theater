@@ -55,6 +55,34 @@ To override a file that guesses wrong, put a JSON sidecar next to it —
 { "screen": "fisheye190", "stereo": "tb", "title": "Custom title" }
 ```
 
+## Chapters
+
+Embedded MP4 chapters are read with `ffprobe` and served to DeoVR as `timeStamps`,
+so they show up on the scrub bar. Files without them simply omit the field.
+
+To add chapters by hand, use the same sidecar:
+
+```json
+{ "chapters": [ { "ts": 0, "name": "Intro" }, { "ts": 95, "name": "Main" } ] }
+```
+
+`ts` is seconds from the start.
+
+## Faststart
+
+MP4s written without `-movflags +faststart` keep their `moov` index *after* the
+video data. A streaming player can't resolve duration or seek points until it has
+pulled the entire file, which shows up as broken seeking and strange behaviour at
+the end of playback. ffmpeg and ComfyUI both produce these by default.
+
+The server logs a warning when it sees one. To fix every file in place:
+
+```bash
+./optimize.sh /srv/deovr/media
+```
+
+Remux only — lossless, no re-encode, and originals are left untouched if it fails.
+
 ## API
 
 | Route | Returns |

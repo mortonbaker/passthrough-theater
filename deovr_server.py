@@ -126,6 +126,59 @@ def layout_for(name):
     return screen, "sbs", True
 
 
+def chapters_of(path):
+    """Embedded MP4 chapters as DeoVR timeStamps, cached by path+mtime."""
+    try:
+        key = "chap:%s:%d" % (path, int(os.path.getmtime(path)))
+    except OSError:
+        return []
+    with _cache_lock:
+        if key in _cache:
+            return _cache[key]
+    marks = []
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_chapters", "-of", "json", path],
+            capture_output=True, text=True, timeout=60,
+        )
+        for i, ch in enumerate(json.loads(out.stdout or "{}").get("chapters", []), 1):
+            name = (ch.get("tags") or {}).get("title") or ("Chapter %d" % i)
+            marks.append({"ts": int(float(ch.get("start_time", 0))), "name": name})
+    except Exception:
+        marks = []
+    with _cache_lock:
+        _cache[key] = marks
+        save_cache()
+    return marks
+
+
+def is_faststart(path):
+    """True when moov precedes mdat, i.e. the file can stream without a full pull."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            off = 0
+            while off < size:
+                fh.seek(off)
+                hdr = fh.read(8)
+                if len(hdr) < 8:
+                    break
+                box = int.from_bytes(hdr[:4], "big")
+                typ = hdr[4:8].decode("latin1", "replace")
+                if box == 1:
+                    box = int.from_bytes(fh.read(8), "big")
+                if box < 8:
+                    break
+                if typ == "moov":
+                    return True
+                if typ == "mdat":
+                    return False
+                off += box
+    except Exception:
+        pass
+    return True  # unknown container: assume fine rather than nag
+
+
 def sidecar(path):
     """Optional <video>.json next to the file overrides any guess."""
     try:
@@ -158,8 +211,12 @@ def scan():
             "screen": screen,
             "stereo": stereo,
             "is3d": is3d,
+            "chapters": chapters_of(path),
         }
         entry.update(sidecar(path))
+        if not is_faststart(path):
+            print("WARNING: %s has moov after mdat; seeking and end-of-video will "
+                  "misbehave. Fix with: ./optimize.sh" % name, flush=True)
         items.append(entry)
     return items
 
@@ -308,7 +365,7 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
                 continue
             base = self.base_url()
             url = "%s/media/%s" % (base, urllib.parse.quote(it["name"]))
-            return self.send_json({
+            detail = {
                 "id": int(vid[:8], 16),
                 "title": it["title"],
                 "videoLength": it["length"],
@@ -320,7 +377,10 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
                     "name": it["codec"],
                     "videoSources": [{"resolution": it["height"], "url": url}],
                 }],
-            })
+            }
+            if it.get("chapters"):
+                detail["timeStamps"] = it["chapters"]
+            return self.send_json(detail)
         self.send_error(404, "no such video")
 
     def thumb(self, vid):
