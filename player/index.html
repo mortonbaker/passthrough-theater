@@ -16,12 +16,11 @@ p.sub{color:#888;margin:0 0 20px}
 #stage{padding:20px 0}
 button{background:#2a6df4;color:#fff;border:0;border-radius:6px;padding:12px 22px;font-size:16px;cursor:pointer;margin-right:10px}
 button.grey{background:#333}
-#hud{position:fixed;left:0;right:0;bottom:0;background:rgba(10,10,10,.85);padding:10px 14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px}
-#hud input[type=range]{width:130px}
-#hud .wide{width:100%;display:flex;gap:10px;align-items:center}
-#seek{flex:1}
+#pre{margin-top:16px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;color:#aaa}
 #err{color:#f66;white-space:pre-wrap}
-canvas{position:fixed;inset:0;z-index:-1}
+#legend{margin-top:22px;color:#777;font-size:13px;line-height:1.8}
+#legend b{color:#bbb}
+canvas.gl{position:fixed;inset:0;z-index:-1}
 </style>
 </head>
 <body>
@@ -35,21 +34,19 @@ canvas{position:fixed;inset:0;z-index:-1}
   <p class="sub" id="vmeta"></p>
   <button id="enter">Enter Passthrough</button>
   <button id="back" class="grey">Back</button>
-  <p id="err"></p>
-</div>
-<div id="hud" hidden>
-  <div class="wide">
-    <button id="pp" style="padding:6px 14px">&#10074;&#10074;</button>
-    <input id="seek" type="range" min="0" max="100" step="0.1" value="0">
-    <span id="clock">0:00</span>
-    <button id="exit" class="grey" style="padding:6px 14px">Exit</button>
+  <div id="pre">
+    <label>key <input id="keycol" type="color" value="#000000"></label>
+    <label>similarity <input id="sim" type="range" min="0" max="0.6" step="0.005"></label>
+    <label>smooth <input id="smo" type="range" min="0" max="0.4" step="0.005"></label>
   </div>
-  <label>key <input id="keycol" type="color" value="#000000"></label>
-  <label>similarity <input id="sim" type="range" min="0" max="0.6" step="0.005"></label>
-  <label>smooth <input id="smo" type="range" min="0" max="0.4" step="0.005"></label>
-  <label>rotate <button id="rot" class="grey" style="padding:4px 10px">90&deg;</button></label>
-  <button id="save" style="padding:6px 14px">Save to file</button>
-  <span id="saved"></span>
+  <div id="legend">
+    In headset:<br>
+    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> rotate / height &nbsp;
+    <b>L-stick</b> scale / seek &plusmn;10s<br>
+    <b>X</b> key strength (hold grip: softness) &nbsp; <b>Y</b> reset position &nbsp;
+    <b>R-stick click</b> save settings to file &nbsp; <b>L-stick click</b> hide panel
+  </div>
+  <p id="err"></p>
 </div>
 
 <script type="module">
@@ -57,19 +54,24 @@ import * as THREE from './three.module.js';
 
 const FOV = {fisheye190:190, fisheye:180, mkx200:200, mkx220:220, rf52:190, vrca220:220};
 const $ = id => document.getElementById(id);
-let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, mats=[], rotY=0, group=null;
+const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null;
+let mats=[], group=null, panel=null, panelTex=null, panelCtx=null, panelOn=true;
+let yaw=0, posY=0, scl=1, saveNote='', noteUntil=0;
+const prevBtn = {left:{}, right:{}};
+let seekCool=0;
 
 // ---------- library ----------
 async function loadLib(){
   const j = await (await fetch('/deovr')).json();
-  const grid = $('grid');
   for (const it of j.scenes[0].list){
     const id = it.video_url.split('/').pop();
     const c = document.createElement('div');
     c.className='card';
     c.innerHTML = `<img loading="lazy" src="/thumb/${id}.jpg"><span>${it.title}</span>`;
     c.onclick = () => pick(id);
-    grid.appendChild(c);
+    $('grid').appendChild(c);
   }
 }
 async function pick(id){
@@ -95,7 +97,7 @@ function fisheyeGeo(fovDeg, R=8, seg=72){
     const t = j/seg*tMax, p = i/seg*Math.PI*2;
     const st=Math.sin(t), ct=Math.cos(t);
     pos.push(R*st*Math.cos(p), R*st*Math.sin(p), -R*ct);
-    const r = (t/tMax)*0.5;                       // equidistant: edge of circle = edge of eye square
+    const r = (t/tMax)*0.5;
     uv.push(0.5 + r*Math.cos(p), 0.5 + r*Math.sin(p));
   }
   for (let j=0;j<seg;j++) for (let i=0;i<seg;i++){
@@ -108,7 +110,7 @@ function fisheyeGeo(fovDeg, R=8, seg=72){
   g.setIndex(idx);
   return g;
 }
-function domeGeo(full){ // half (180) or full (360) equirect sphere, viewed from inside
+function domeGeo(full){
   const g = new THREE.SphereGeometry(8, 72, 72, full? 0 : Math.PI/2, full? Math.PI*2 : Math.PI);
   g.scale(-1,1,1);
   return g;
@@ -154,11 +156,9 @@ function makeMat(tex){
     vertexShader:VERT, fragmentShader:FRAG,
   });
 }
-
-// SBS + optional top/bottom matte pack. flipY texture: v=1 is image top.
 function eyeUV(mat, eye, sbs, matteTB){
   const sx = sbs? 0.5 : 1, ox = (sbs && eye===1)? 0.5 : 0;
-  if (matteTB){ // colour in top half, matte directly below
+  if (matteTB){
     mat.uniforms.uvScl.value.set(sx, 0.5);
     mat.uniforms.uvOff.value.set(ox, 0.5);
     mat.uniforms.matteOff.value.set(0, -0.5);
@@ -167,6 +167,105 @@ function eyeUV(mat, eye, sbs, matteTB){
     mat.uniforms.uvScl.value.set(sx, 1);
     mat.uniforms.uvOff.value.set(ox, 0);
   }
+}
+function applyKey(){
+  for (const m of mats){
+    m.uniforms.keyColor.value.set($('keycol').value);
+    m.uniforms.similarity.value = parseFloat($('sim').value);
+    m.uniforms.smoothness.value = parseFloat($('smo').value);
+    const c = new THREE.Color($('keycol').value);
+    m.uniforms.spill.value = (c.g > c.r*1.5 && c.g > c.b*1.5) ? 1 : 0;
+  }
+}
+for (const id of ['keycol','sim','smo']) $(id).oninput = applyKey;
+
+async function saveSidecar(){
+  const body = {chroma:{color:$('keycol').value,
+    similarity:parseFloat($('sim').value), smoothness:parseFloat($('smo').value)}};
+  const r = await fetch('/sidecar/'+vidId, {method:'POST', body: JSON.stringify(body)});
+  saveNote = r.ok ? 'saved to file' : 'SAVE FAILED';
+  noteUntil = performance.now() + 3000;
+}
+
+// ---------- in-VR status panel (dom-overlay doesn't exist on Quest browser) ----------
+function makePanel(){
+  const cv = document.createElement('canvas');
+  cv.width = 1024; cv.height = 400;
+  panelCtx = cv.getContext('2d');
+  panelTex = new THREE.CanvasTexture(cv);
+  const m = new THREE.MeshBasicMaterial({map:panelTex, transparent:true, depthTest:false});
+  panel = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.24), m);
+  panel.position.set(0, -0.42, -1.0);
+  panel.rotation.x = -0.35;
+  panel.renderOrder = 10;
+  return panel;
+}
+function drawPanel(){
+  const c = panelCtx; if (!c) return;
+  c.clearRect(0,0,1024,400);
+  c.fillStyle = 'rgba(10,10,10,0.72)';
+  c.beginPath(); c.roundRect(0,0,1024,400,28); c.fill();
+  c.fillStyle = '#eee'; c.font = '38px system-ui';
+  const t = video? video.currentTime : 0, d = (video && video.duration) || detail.videoLength || 0;
+  c.fillText(`${video && video.paused ? '⏸' : '▶'}  ${fmt(t)} / ${fmt(d)}`, 40, 66);
+  // progress bar
+  c.fillStyle = '#333'; c.fillRect(40, 96, 944, 14);
+  c.fillStyle = '#2a6df4'; c.fillRect(40, 96, d? 944*t/d : 0, 14);
+  c.fillStyle = '#aaa'; c.font = '30px system-ui';
+  c.fillText(`key ${$('keycol').value}  strength ${(+$('sim').value).toFixed(2)}  soft ${(+$('smo').value).toFixed(2)}`, 40, 170);
+  c.fillText(`rot ${(yaw*57.3).toFixed(0)}°  height ${posY.toFixed(2)}m  scale ${scl.toFixed(2)}`, 40, 218);
+  c.fillStyle = '#888'; c.font = '26px system-ui';
+  c.fillText('A play/pause   B exit   R-stick rotate/height   L-stick scale/seek', 40, 290);
+  c.fillText('X key± (grip: soft±)   Y reset   R-click save   L-click hide panel', 40, 330);
+  if (performance.now() < noteUntil){
+    c.fillStyle = '#4f4'; c.font = '32px system-ui';
+    c.fillText(saveNote, 700, 66);
+  }
+  panelTex.needsUpdate = true;
+}
+
+// ---------- controller input ----------
+function pollInput(dt){
+  if (!session) return;
+  for (const src of session.inputSources){
+    const gp = src.gamepad; if (!gp) continue;
+    const hand = src.handedness; if (hand!=='left' && hand!=='right') continue;
+    const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0]||0, gp.axes[1]||0];
+    const dead = v => Math.abs(v) < 0.15 ? 0 : v;
+    const sx = dead(ax[0]), sy = dead(ax[1]);
+    const prev = prevBtn[hand];
+    const pressed = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
+    const edge = i => { const now = pressed(i), was = !!prev[i]; prev[i] = now; return now && !was; };
+    const grip = pressed(1);
+
+    if (hand === 'right'){
+      if (sx) yaw -= sx * dt * 1.6;
+      if (sy) posY -= sy * dt * 0.55;
+      if (edge(4)) video && (video.paused ? video.play() : video.pause());   // A
+      if (edge(5)) session.end();                                            // B
+      if (edge(3)) saveSidecar();                                            // stick click
+    } else {
+      if (sy) { scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3); }
+      if (sx && performance.now() > seekCool && Math.abs(sx) > 0.6 && video && video.duration){
+        video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + (sx>0?10:-10)));
+        seekCool = performance.now() + 400;
+      }
+      if (edge(4)){                                                          // X
+        const id = grip ? 'smo' : 'sim';
+        const el = $(id); const max = grip? 0.4 : 0.6;
+        let v = parseFloat(el.value) + 0.02; if (v > max*0.55) v = 0.02;
+        el.value = v; applyKey();
+      }
+      if (edge(5)){ yaw=0; posY=0; scl=1; }                                  // Y
+      if (edge(3)){ panelOn = !panelOn; }                                    // stick click
+    }
+  }
+  if (group){
+    group.rotation.y = yaw;
+    group.position.y = posY;
+    group.scale.setScalar(scl);
+  }
+  if (panel) panel.visible = panelOn;
 }
 
 // ---------- session ----------
@@ -177,7 +276,7 @@ $('enter').onclick = async () => {
 };
 
 async function start(){
-  if (!navigator.xr) throw new Error('WebXR unavailable in this browser');
+  if (!navigator.xr) throw new Error('WebXR unavailable (needs the https URL)');
   const url = detail.encodings[0].videoSources[0].url;
   video = document.createElement('video');
   video.src = url; video.loop = true; video.playsInline = true;
@@ -187,9 +286,10 @@ async function start(){
   renderer.setPixelRatio(1);
   renderer.setSize(innerWidth, innerHeight);
   renderer.xr.enabled = true;
+  renderer.domElement.className = 'gl';
   document.body.appendChild(renderer.domElement);
   scene = new THREE.Scene();
-  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 100);
+  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 100);
   cam.layers.enable(1);
 
   const tex = new THREE.VideoTexture(video);
@@ -202,7 +302,7 @@ async function start(){
   const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
 
   group = new THREE.Group();
-  mats = [];
+  mats = []; yaw=0; posY=0; scl=1;
   if (sbs && detail.is3d !== false){
     for (const eye of [0,1]){
       const m = makeMat(tex); eyeUV(m, eye, true, matteTB);
@@ -214,20 +314,20 @@ async function start(){
     const m = makeMat(tex); eyeUV(m, 0, false, matteTB);
     group.add(new THREE.Mesh(geo, m)); mats.push(m);
   }
-  group.rotation.y = rotY;
   scene.add(group);
+  scene.add(makePanel());
   applyKey();
 
-  session = await navigator.xr.requestSession('immersive-ar', {
-    optionalFeatures:['dom-overlay'], domOverlay:{root: $('hud')},
-  });
+  session = await navigator.xr.requestSession('immersive-ar');
   session.addEventListener('end', cleanup);
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
-  $('hud').hidden = false;
+
+  let last = performance.now(), pTick = 0;
   renderer.setAnimationLoop(() => {
-    if (video && !$('seek').dragging) { $('seek').value = video.currentTime/ (video.duration||1) * 100;
-      $('clock').textContent = fmt(video.currentTime); }
+    const now = performance.now(), dt = Math.min(0.1, (now-last)/1000); last = now;
+    pollInput(dt);
+    if (panelOn && now > pTick){ drawPanel(); pTick = now + 250; }
     renderer.render(scene, cam);
   });
 }
@@ -237,32 +337,9 @@ function cleanup(){
   try{ session && session.end(); }catch(e){}
   try{ video && video.pause(); }catch(e){}
   try{ renderer && renderer.domElement.remove(); renderer.dispose(); }catch(e){}
-  session=null; renderer=null; video=null; mats=[]; group=null;
-  $('hud').hidden = true;
+  session=null; renderer=null; video=null; mats=[]; group=null; panel=null;
+  prevBtn.left={}; prevBtn.right={};
 }
-
-// ---------- hud ----------
-function applyKey(){
-  for (const m of mats){
-    m.uniforms.keyColor.value.set($('keycol').value);
-    m.uniforms.similarity.value = parseFloat($('sim').value);
-    m.uniforms.smoothness.value = parseFloat($('smo').value);
-    const c = new THREE.Color($('keycol').value);
-    m.uniforms.spill.value = (c.g > c.r*1.5 && c.g > c.b*1.5) ? 1 : 0;
-  }
-}
-for (const id of ['keycol','sim','smo']) $(id).oninput = applyKey;
-$('rot').onclick = () => { rotY += Math.PI/2; if (group) group.rotation.y = rotY; };
-$('pp').onclick = () => { if(!video) return; video.paused? video.play() : video.pause(); };
-$('seek').oninput = e => { if (video && video.duration) video.currentTime = e.target.value/100*video.duration; };
-$('exit').onclick = cleanup;
-$('save').onclick = async () => {
-  const body = {chroma:{color:$('keycol').value, similarity:parseFloat($('sim').value), smoothness:parseFloat($('smo').value)}};
-  const r = await fetch('/sidecar/'+vidId, {method:'POST', body: JSON.stringify(body)});
-  $('saved').textContent = r.ok? 'saved' : 'save failed';
-  setTimeout(()=>$('saved').textContent='', 3000);
-};
-const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 
 loadLib();
 </script>
