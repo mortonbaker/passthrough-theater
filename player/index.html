@@ -41,8 +41,8 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   </div>
   <div id="legend">
     In headset:<br>
-    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> rotate / height &nbsp;
-    <b>L-stick</b> scale / seek &plusmn;10s<br>
+    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> yaw / pitch
+    (hold grip: height) &nbsp; <b>L-stick</b> zoom / seek &plusmn;10s (hold grip: distance)<br>
     <b>X</b> key strength (hold grip: softness) &nbsp; <b>Y</b> reset position &nbsp;
     <b>R-stick click</b> save settings to file &nbsp; <b>L-stick click</b> hide panel
   </div>
@@ -58,7 +58,7 @@ const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')
 
 let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null;
 let mats=[], group=null, panel=null, panelTex=null, panelCtx=null, panelOn=true;
-let yaw=0, posY=0, scl=1, saveNote='', noteUntil=0;
+let yaw=0, pitch=0, posY=0, dist=0, scl=1, saveNote='', noteUntil=0;
 const prevBtn = {left:{}, right:{}};
 let seekCool=0;
 
@@ -213,9 +213,9 @@ function drawPanel(){
   c.fillStyle = '#2a6df4'; c.fillRect(40, 96, d? 944*t/d : 0, 14);
   c.fillStyle = '#aaa'; c.font = '30px system-ui';
   c.fillText(`key ${$('keycol').value}  strength ${(+$('sim').value).toFixed(2)}  soft ${(+$('smo').value).toFixed(2)}`, 40, 170);
-  c.fillText(`rot ${(yaw*57.3).toFixed(0)}°  height ${posY.toFixed(2)}m  scale ${scl.toFixed(2)}`, 40, 218);
+  c.fillText(`yaw ${(yaw*57.3).toFixed(0)}°  pitch ${(pitch*57.3).toFixed(0)}°  height ${posY.toFixed(2)}  zoom ${scl.toFixed(2)}  dist ${dist.toFixed(2)}`, 40, 218);
   c.fillStyle = '#888'; c.font = '26px system-ui';
-  c.fillText('A play/pause   B exit   R-stick rotate/height   L-stick scale/seek', 40, 290);
+  c.fillText('A play/pause  B exit  R-stick yaw/pitch (grip: height)  L-stick zoom/seek (grip: dist)', 40, 290);
   c.fillText('X key± (grip: soft±)   Y reset   R-click save   L-click hide panel', 40, 330);
   if (performance.now() < noteUntil){
     c.fillStyle = '#4f4'; c.font = '32px system-ui';
@@ -240,12 +240,18 @@ function pollInput(dt){
 
     if (hand === 'right'){
       if (sx) yaw -= sx * dt * 1.6;
-      if (sy) posY -= sy * dt * 0.55;
+      if (sy){
+        if (grip) posY -= sy * dt * 0.55;                                    // grip: height
+        else pitch = THREE.MathUtils.clamp(pitch - sy*dt*1.2, -1.3, 1.3);    // pitch
+      }
       if (edge(4)) video && (video.paused ? video.play() : video.pause());   // A
       if (edge(5)) session.end();                                            // B
       if (edge(3)) saveSidecar();                                            // stick click
     } else {
-      if (sy) { scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3); }
+      if (sy){
+        if (grip) dist = THREE.MathUtils.clamp(dist - sy*dt*1.6, -3, 3);     // grip: distance
+        else scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3);     // zoom
+      }
       if (sx && performance.now() > seekCool && Math.abs(sx) > 0.6 && video && video.duration){
         video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + (sx>0?10:-10)));
         seekCool = performance.now() + 400;
@@ -256,13 +262,16 @@ function pollInput(dt){
         let v = parseFloat(el.value) + 0.02; if (v > max*0.55) v = 0.02;
         el.value = v; applyKey();
       }
-      if (edge(5)){ yaw=0; posY=0; scl=1; }                                  // Y
+      if (edge(5)){ yaw=0; pitch=0; posY=0; dist=0; scl=1; }                 // Y
       if (edge(3)){ panelOn = !panelOn; }                                    // stick click
     }
   }
   if (group){
+    group.rotation.order = 'YXZ';
     group.rotation.y = yaw;
+    group.rotation.x = pitch;
     group.position.y = posY;
+    group.position.z = dist;
     group.scale.setScalar(scl);
   }
   if (panel) panel.visible = panelOn;
@@ -302,7 +311,7 @@ async function start(){
   const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
 
   group = new THREE.Group();
-  mats = []; yaw=0; posY=0; scl=1;
+  mats = []; yaw=0; pitch=0; posY=0; dist=0; scl=1;
   if (sbs && detail.is3d !== false){
     for (const eye of [0,1]){
       const m = makeMat(tex); eyeUV(m, eye, true, matteTB);
