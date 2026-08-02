@@ -43,6 +43,11 @@ _cache_lock = threading.Lock()
 _cache = {}
 
 
+def html_escape(s):
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
 def load_cache():
     global _cache
     try:
@@ -208,7 +213,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         try:
-            if path in ("/", "/deovr", "/index.json"):
+            # DeoVR asks for /deovr on a bare host and expects a normal page at
+            # "/". Serving JSON at the root makes its browser render it as text.
+            if path == "/":
+                return self.homepage()
+            if path in ("/deovr", "/index.json"):
                 return self.index()
             if path.startswith("/video/"):
                 return self.detail(path[len("/video/"):])
@@ -239,6 +248,45 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
         self.send_error(404, "not found")
+
+    def homepage(self):
+        """Human-viewable gallery. DeoVR loads this, then fetches /deovr itself."""
+        items = scan()
+        base = self.base_url()
+        cards = "".join(
+            '<a class="c" href="/media/{q}"><img loading="lazy" src="/thumb/{i}.jpg">'
+            '<span>{t}</span><em>{m}:{s:02d} &middot; {sc} &middot; {st}</em></a>'.format(
+                q=urllib.parse.quote(it["name"]), i=it["id"],
+                t=html_escape(it["title"]), m=it["length"] // 60, s=it["length"] % 60,
+                sc=it["screen"], st=it["stereo"],
+            )
+            for it in items
+        )
+        page = """<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>deovr-lan</title>
+<link rel="alternate" type="application/json" href="/deovr">
+<style>
+body{background:#111;color:#eee;font:15px/1.4 system-ui,sans-serif;margin:0;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+p{color:#888;margin:0 0 24px}code{color:#6cf}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.c{display:block;background:#1c1c1c;border-radius:8px;overflow:hidden;text-decoration:none;color:#eee}
+.c:hover{background:#262626}
+.c img{width:100%%;aspect-ratio:1;object-fit:cover;display:block;background:#000}
+.c span{display:block;padding:10px 12px 2px;font-weight:500}
+.c em{display:block;padding:0 12px 12px;color:#888;font-style:normal;font-size:13px}
+</style></head><body>
+<h1>deovr-lan &middot; %d video%s</h1>
+<p>In DeoVR enter <code>%s</code> &nbsp;|&nbsp; manifest at <code>/deovr</code></p>
+<div class="g">%s</div></body></html>""" % (
+            len(items), "" if len(items) == 1 else "s", base, cards)
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def index(self):
         items = scan()
