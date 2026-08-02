@@ -1,0 +1,18 @@
+[Unit]
+Description=DeoVR LAN media server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+ExecStart=/usr/bin/python3 /srv/deovr/deovr_server.py
+WorkingDirectory=/srv/deovr
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

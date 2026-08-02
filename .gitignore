@@ -1,0 +1,5 @@
+media/
+thumbs/
+cache.json
+*.pyc
+__pycache__/
