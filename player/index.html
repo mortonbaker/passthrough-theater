@@ -41,12 +41,14 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   </div>
   <div id="legend">
     In headset:<br>
-    <b>Hold right grip = grab the scene</b> — twist for yaw, tilt for pitch, lift for
-    height, right stick zooms while held<br>
-    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> yaw / pitch (fine) &nbsp;
-    <b>L-stick</b> zoom / seek &plusmn;10s (hold grip: distance)<br>
-    <b>X</b> key strength (hold grip: softness) &nbsp; <b>Y</b> reset position &nbsp;
-    <b>R-stick click</b> save settings to file &nbsp; <b>L-stick click</b> hide panel
+    <b>Right trigger</b> &mdash; point at menu to click and drag sliders; click away from
+    the menu to show/hide it; hold away from the menu to move it where you point<br>
+    <b>&#9881; on the menu</b> opens settings: chroma + yaw / pitch / height / zoom /
+    distance sliders &nbsp; <b>ADV</b> toggles gesture controls<br>
+    Gestures (ADV on): <b>right grip</b> grab to aim (twist/tilt/lift, stick zooms),
+    <b>L-stick</b> zoom &amp; seek (grip: distance), <b>X</b> key strength (grip:
+    softness), <b>Y</b> reset &nbsp;&middot;&nbsp; <b>A</b> play/pause and <b>B</b> exit
+    always work
   </div>
   <p id="err"></p>
 </div>
@@ -57,10 +59,13 @@ import * as THREE from './three.module.js';
 const FOV = {fisheye190:190, fisheye:180, mkx200:200, mkx220:220, rf52:190, vrca220:220};
 const $ = id => document.getElementById(id);
 const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+const clamp = THREE.MathUtils.clamp;
 
-let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null;
-let mats=[], group=null, panel=null, panelTex=null, panelCtx=null, panelOn=true;
-let yaw=0, pitch=0, posY=0, dist=0, scl=1, saveNote='', noteUntil=0;
+let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, xrCam=null;
+let mats=[], group=null;
+let yaw=0, pitch=0, posY=0, dist=0, scl=1;
+let saveNote='', noteUntil=0;
+let advMode = localStorage.getItem('advMode') !== '0';
 const prevBtn = {left:{}, right:{}};
 let seekCool=0, grab=null;
 function angDelta(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
@@ -186,48 +191,240 @@ async function saveSidecar(){
   const body = {chroma:{color:$('keycol').value,
     similarity:parseFloat($('sim').value), smoothness:parseFloat($('smo').value)}};
   const r = await fetch('/sidecar/'+vidId, {method:'POST', body: JSON.stringify(body)});
-  saveNote = r.ok ? 'saved to file' : 'SAVE FAILED';
-  noteUntil = performance.now() + 3000;
+  saveNote = r.ok ? 'saved' : 'SAVE FAILED';
+  noteUntil = performance.now() + 2500;
+  needDraw = true;
+}
+function applyTransform(){
+  if (!group) return;
+  group.rotation.order = 'YXZ';
+  group.rotation.y = yaw;
+  group.rotation.x = pitch;
+  group.position.y = posY;
+  group.position.z = dist;
+  group.scale.setScalar(scl);
 }
 
-// ---------- in-VR status panel (dom-overlay doesn't exist on Quest browser) ----------
-function makePanel(){
-  const cv = document.createElement('canvas');
-  cv.width = 1024; cv.height = 400;
-  panelCtx = cv.getContext('2d');
-  panelTex = new THREE.CanvasTexture(cv);
-  const m = new THREE.MeshBasicMaterial({map:panelTex, transparent:true, depthTest:false});
-  panel = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.24), m);
-  panel.position.set(0, -0.42, -1.0);
-  panel.rotation.x = -0.35;
-  panel.renderOrder = 10;
-  return panel;
+// ================= in-world menu (laser + canvas UI) =================
+let panelGroup=null, mainMesh=null, popMesh=null;
+let mainCtx=null, mainTex=null, popCtx=null, popTex=null;
+let menuOn=true, popOn=false, needDraw=true;
+let lasers={};             // hand -> {line, dot}
+let drag=null;             // {hand, widget, panel}
+let moveMenu=null;         // {hand}
+let triggerDown={};        // hand -> {t, overUI}
+const raycaster = new THREE.Raycaster();
+const tmpM = new THREE.Matrix4();
+
+const deg = v => v*180/Math.PI, rad = v => v*Math.PI/180;
+// widget defs: canvas-space rects. Sliders: get/set in real units.
+const MAIN_W = [
+  {id:'play', type:'btn',  x:28,  y:70, w:120, h:130},
+  {id:'seek', type:'slider', x:190, y:120, w:600, h:60,
+    get:()=> video && video.duration ? video.currentTime/video.duration : 0,
+    set:v => { if (video && video.duration) video.currentTime = v*video.duration; }},
+  {id:'gear', type:'btn', x:816, y:70, w:84, h:130},
+  {id:'adv',  type:'btn', x:912, y:70, w:84, h:130},
+];
+const POP_ROWS = [
+  {id:'sim',  label:'key strength', min:0, max:0.35, get:()=>+$('sim').value, set:v=>{$('sim').value=v; applyKey();}, fmt:v=>v.toFixed(2)},
+  {id:'smo',  label:'softness',     min:0, max:0.25, get:()=>+$('smo').value, set:v=>{$('smo').value=v; applyKey();}, fmt:v=>v.toFixed(2)},
+  {id:'yaw',  label:'yaw',    min:-180, max:180, get:()=>deg(yaw),  set:v=>{yaw=rad(v); applyTransform();},  fmt:v=>v.toFixed(0)+'°'},
+  {id:'pit',  label:'pitch',  min:-75,  max:75,  get:()=>deg(pitch),set:v=>{pitch=rad(v); applyTransform();},fmt:v=>v.toFixed(0)+'°'},
+  {id:'hgt',  label:'height', min:-1.5, max:1.5, get:()=>posY, set:v=>{posY=v; applyTransform();}, fmt:v=>v.toFixed(2)+'m'},
+  {id:'zoom', label:'zoom',   min:0.3,  max:3,   get:()=>scl,  set:v=>{scl=v; applyTransform();},  fmt:v=>v.toFixed(2)},
+  {id:'dist', label:'distance', min:-3, max:3,   get:()=>dist, set:v=>{dist=v; applyTransform();}, fmt:v=>v.toFixed(2)+'m'},
+];
+const POP_W = [];
+{ // build popup widget rects: header buttons + one slider per row
+  POP_W.push({id:'keyblack', type:'btn', x:250, y:26, w:170, h:64});
+  POP_W.push({id:'keygreen', type:'btn', x:440, y:26, w:170, h:64});
+  POP_W.push({id:'reset',    type:'btn', x:640, y:26, w:160, h:64});
+  POP_W.push({id:'save',     type:'btn', x:820, y:26, w:160, h:64});
+  POP_ROWS.forEach((r,i) => {
+    POP_W.push({id:r.id, type:'slider', x:280, y:118+i*86, w:600, h:56, row:r,
+      get:()=> (r.get()-r.min)/(r.max-r.min),
+      set:v => r.set(r.min + v*(r.max-r.min))});
+  });
 }
-function drawPanel(){
-  const c = panelCtx; if (!c) return;
-  c.clearRect(0,0,1024,400);
-  c.fillStyle = 'rgba(10,10,10,0.72)';
-  c.beginPath(); c.roundRect(0,0,1024,400,28); c.fill();
-  c.fillStyle = '#eee'; c.font = '38px system-ui';
-  const t = video? video.currentTime : 0, d = (video && video.duration) || detail.videoLength || 0;
-  c.fillText(`${video && video.paused ? '⏸' : '▶'}  ${fmt(t)} / ${fmt(d)}`, 40, 66);
-  // progress bar
-  c.fillStyle = '#333'; c.fillRect(40, 96, 944, 14);
-  c.fillStyle = '#2a6df4'; c.fillRect(40, 96, d? 944*t/d : 0, 14);
-  c.fillStyle = '#aaa'; c.font = '30px system-ui';
-  c.fillText(`key ${$('keycol').value}  strength ${(+$('sim').value).toFixed(2)}  soft ${(+$('smo').value).toFixed(2)}`, 40, 170);
-  c.fillText(`yaw ${(yaw*57.3).toFixed(0)}°  pitch ${(pitch*57.3).toFixed(0)}°  height ${posY.toFixed(2)}  zoom ${scl.toFixed(2)}  dist ${dist.toFixed(2)}`, 40, 218);
-  c.fillStyle = '#888'; c.font = '26px system-ui';
-  c.fillText('R-GRIP = grab: twist yaw, tilt pitch, lift height, +stick zoom', 40, 290);
-  c.fillText('A play/pause  B exit  R-stick yaw/pitch  L-stick zoom/seek (grip:dist)  X key±  Y reset  R-click save', 40, 330);
-  if (performance.now() < noteUntil){
-    c.fillStyle = '#4f4'; c.font = '32px system-ui';
-    c.fillText(saveNote, 700, 66);
+
+function makeMenu(){
+  panelGroup = new THREE.Group();
+  panelGroup.position.set(0, -0.32, -1.1);
+  panelGroup.rotation.x = -0.28;
+  // main bar
+  const mc = document.createElement('canvas'); mc.width=1024; mc.height=270;
+  mainCtx = mc.getContext('2d');
+  mainTex = new THREE.CanvasTexture(mc);
+  mainMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.169),
+    new THREE.MeshBasicMaterial({map:mainTex, transparent:true, depthTest:false}));
+  mainMesh.renderOrder = 10; mainMesh.userData.widgets = MAIN_W; mainMesh.userData.ctxW=1024; mainMesh.userData.ctxH=270;
+  panelGroup.add(mainMesh);
+  // popup
+  const pc = document.createElement('canvas'); pc.width=1024; pc.height=740;
+  popCtx = pc.getContext('2d');
+  popTex = new THREE.CanvasTexture(pc);
+  popMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.462),
+    new THREE.MeshBasicMaterial({map:popTex, transparent:true, depthTest:false}));
+  popMesh.renderOrder = 11; popMesh.position.set(0, 0.33, 0);
+  popMesh.userData.widgets = POP_W; popMesh.userData.ctxW=1024; popMesh.userData.ctxH=740;
+  popMesh.visible = false;
+  panelGroup.add(popMesh);
+  return panelGroup;
+}
+function roundRect(c,x,y,w,h,r){ c.beginPath(); c.roundRect(x,y,w,h,r); }
+function drawBtn(c,wd,label,on){
+  c.fillStyle = on? '#2a6df4' : '#2c2c2c';
+  roundRect(c, wd.x, wd.y, wd.w, wd.h, 16); c.fill();
+  c.fillStyle = '#eee'; c.font='40px system-ui'; c.textAlign='center'; c.textBaseline='middle';
+  c.fillText(label, wd.x+wd.w/2, wd.y+wd.h/2+2);
+  c.textAlign='left'; c.textBaseline='alphabetic';
+}
+function drawSlider(c, wd, frac, label, valTxt){
+  c.fillStyle='#333'; roundRect(c, wd.x, wd.y+wd.h/2-8, wd.w, 16, 8); c.fill();
+  c.fillStyle='#2a6df4'; roundRect(c, wd.x, wd.y+wd.h/2-8, Math.max(8, wd.w*clamp(frac,0,1)), 16, 8); c.fill();
+  c.fillStyle='#ddd'; c.beginPath();
+  c.arc(wd.x + wd.w*clamp(frac,0,1), wd.y+wd.h/2, 22, 0, 7); c.fill();
+  if (label){ c.fillStyle='#aaa'; c.font='32px system-ui'; c.fillText(label, 40, wd.y+wd.h/2+11); }
+  if (valTxt){ c.fillStyle='#ccc'; c.font='30px system-ui'; c.fillText(valTxt, wd.x+wd.w+22, wd.y+wd.h/2+10); }
+}
+function drawMain(){
+  const c = mainCtx; c.clearRect(0,0,1024,270);
+  c.fillStyle='rgba(12,12,12,0.8)'; roundRect(c,0,0,1024,270,26); c.fill();
+  drawBtn(c, MAIN_W[0], video && !video.paused ? '❚❚' : '▶', false);
+  const t = video? video.currentTime:0, d = (video && video.duration)||detail.videoLength||0;
+  c.fillStyle='#ccc'; c.font='30px system-ui';
+  c.fillText(`${fmt(t)} / ${fmt(d)}`, 190, 58);
+  if (performance.now() < noteUntil){ c.fillStyle='#4f4'; c.fillText(saveNote, 420, 58); }
+  drawSlider(c, MAIN_W[1], d? t/d : 0, null, null);
+  drawBtn(c, MAIN_W[2], '⚙', popOn);
+  drawBtn(c, MAIN_W[3], 'ADV', advMode);
+  c.fillStyle='#777'; c.font='24px system-ui';
+  c.fillText('trigger: click · away: show/hide · hold away: move menu', 190, 240);
+  mainTex.needsUpdate = true;
+}
+function drawPop(){
+  const c = popCtx; c.clearRect(0,0,1024,740);
+  c.fillStyle='rgba(12,12,12,0.85)'; roundRect(c,0,0,1024,740,26); c.fill();
+  c.fillStyle='#aaa'; c.font='32px system-ui'; c.fillText('key', 40, 70);
+  const key = $('keycol').value.toLowerCase();
+  drawBtn(c, POP_W[0], 'black', key==='#000000');
+  drawBtn(c, POP_W[1], 'green', key==='#00ff00');
+  drawBtn(c, POP_W[2], 'reset', false);
+  drawBtn(c, POP_W[3], 'save', false);
+  for (const wd of POP_W){
+    if (wd.type!=='slider') continue;
+    drawSlider(c, wd, wd.get(), wd.row.label, wd.row.fmt(wd.row.get()));
   }
-  panelTex.needsUpdate = true;
+  popTex.needsUpdate = true;
+}
+function drawMenus(){
+  if (!mainCtx) return;
+  drawMain();
+  if (popOn) drawPop();
 }
 
-// ---------- controller input ----------
+// ---------- laser pointers ----------
+function makeLaser(){
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-3)]);
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x2a6df4, transparent:true, opacity:0.7}));
+  line.renderOrder = 9;
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.008),
+    new THREE.MeshBasicMaterial({color:0xffffff, depthTest:false}));
+  dot.visible=false; dot.renderOrder=12;
+  return {line, dot};
+}
+function rayFrom(ctrl){
+  tmpM.identity().extractRotation(ctrl.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+  raycaster.ray.direction.set(0,0,-1).applyMatrix4(tmpM);
+  return raycaster;
+}
+function hitUI(ctrl){
+  if (!menuOn) return null;
+  const targets = popOn ? [mainMesh, popMesh] : [mainMesh];
+  const hits = rayFrom(ctrl).intersectObjects(targets, false);
+  if (!hits.length) return null;
+  const h = hits[0];
+  const ud = h.object.userData;
+  const cx = h.uv.x * ud.ctxW, cy = (1-h.uv.y) * ud.ctxH;
+  let widget = null;
+  for (const wd of ud.widgets){
+    if (cx>=wd.x-14 && cx<=wd.x+wd.w+14 && cy>=wd.y-14 && cy<=wd.y+wd.h+14){ widget=wd; break; }
+  }
+  return {mesh:h.object, point:h.point, distance:h.distance, cx, cy, widget, ud};
+}
+function widgetClick(wd){
+  needDraw = true;
+  switch(wd.id){
+    case 'play': video && (video.paused? video.play() : video.pause()); break;
+    case 'gear': popOn = !popOn; popMesh.visible = popOn; break;
+    case 'adv': advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0'); break;
+    case 'keyblack': $('keycol').value = '#000000'; applyKey(); break;
+    case 'keygreen': $('keycol').value = '#00ff00'; applyKey(); break;
+    case 'reset': yaw=0; pitch=0; posY=0; dist=0; scl=1; applyTransform(); break;
+    case 'save': saveSidecar(); break;
+  }
+}
+
+// ---------- trigger handling (select events) ----------
+function onSelectStart(hand, ctrl){
+  const hit = hitUI(ctrl);
+  triggerDown[hand] = {t: performance.now(), overUI: !!hit};
+  if (hit){
+    if (hit.widget && hit.widget.type==='slider'){
+      drag = {hand, widget:hit.widget, mesh:hit.mesh};
+      dragTo(hit);
+    } else if (hit.widget){
+      widgetClick(hit.widget);
+    }
+  }
+}
+function onSelectEnd(hand, ctrl){
+  const td = triggerDown[hand]; triggerDown[hand]=null;
+  if (drag && drag.hand===hand){ drag=null; return; }
+  if (moveMenu && moveMenu.hand===hand){ moveMenu=null; return; }
+  if (td && !td.overUI && hand==='right'){
+    if (performance.now()-td.t < 350){ menuOn = !menuOn; panelGroup.visible = menuOn; needDraw = true; }
+  }
+}
+function dragTo(hit){
+  if (!drag) return;
+  const wd = drag.widget;
+  const v = clamp((hit.cx - wd.x)/wd.w, 0, 1);
+  wd.set(v);
+  needDraw = true;
+}
+function updateTriggers(ctrls){
+  // hold-away-from-menu (right hand) => move the menu to where the ray points
+  const td = triggerDown['right'];
+  if (td && !td.overUI && !drag && !moveMenu && performance.now()-td.t >= 350){
+    moveMenu = {hand:'right'};
+    if (!menuOn){ menuOn = true; panelGroup.visible = true; }
+  }
+  if (moveMenu){
+    const ctrl = ctrls['right'];
+    if (ctrl){
+      const rc = rayFrom(ctrl);
+      const p = new THREE.Vector3().copy(rc.ray.direction).multiplyScalar(1.1).add(rc.ray.origin);
+      panelGroup.position.copy(p);
+      if (xrCam){ panelGroup.lookAt(xrCam.position); }
+      needDraw = true;
+    }
+  }
+  if (drag){
+    const ctrl = ctrls[drag.hand];
+    if (ctrl){
+      const hits = rayFrom(ctrl).intersectObject(drag.mesh, false);
+      if (hits.length){
+        const ud = drag.mesh.userData;
+        dragTo({cx: hits[0].uv.x*ud.ctxW, cy:(1-hits[0].uv.y)*ud.ctxH});
+      }
+    }
+  }
+}
+
+// ---------- gamepad gestures (ADV mode) ----------
 function pollInput(dt, frame){
   if (!session) return;
   for (const src of session.inputSources){
@@ -242,58 +439,48 @@ function pollInput(dt, frame){
     const grip = pressed(1);
 
     if (hand === 'right'){
-      if (grip && src.gripSpace && frame){
-        // grab mode: the scene follows the hand — twist for yaw, tilt for
-        // pitch, lift for height. Stick zooms while grabbing.
-        const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
-        if (pose){
-          const o = pose.transform.orientation, p = pose.transform.position;
-          const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
-          const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q);
-          const yawC = Math.atan2(-fwd.x, -fwd.z);
-          const pitchC = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
-          if (!grab) grab = {yawC, pitchC, py:p.y, yaw0:yaw, pitch0:pitch, posY0:posY};
-          yaw = grab.yaw0 + angDelta(yawC, grab.yawC);
-          pitch = THREE.MathUtils.clamp(grab.pitch0 + (pitchC - grab.pitchC), -1.3, 1.3);
-          posY = grab.posY0 + (p.y - grab.py) * 1.5;
-        }
-        if (sy) scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3);  // zoom
-      } else {
-        grab = null;
-        if (sx) yaw -= sx * dt * 1.6;
-        if (sy) pitch = THREE.MathUtils.clamp(pitch - sy*dt*1.2, -1.3, 1.3);
-      }
-      if (edge(4)) video && (video.paused ? video.play() : video.pause());   // A
-      if (edge(5)) session.end();                                            // B
-      if (edge(3)) saveSidecar();                                            // stick click
+      if (edge(4)) { video && (video.paused ? video.play() : video.pause()); needDraw=true; } // A
+      if (edge(5)) session.end();                                                             // B
+      if (edge(3)) saveSidecar();                                                             // stick click
+      if (advMode){
+        if (grip && src.gripSpace && frame){
+          const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
+          if (pose){
+            const o = pose.transform.orientation, p = pose.transform.position;
+            const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+            const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q);
+            const yawC = Math.atan2(-fwd.x, -fwd.z);
+            const pitchC = Math.asin(clamp(fwd.y, -1, 1));
+            if (!grab) grab = {yawC, pitchC, py:p.y, yaw0:yaw, pitch0:pitch, posY0:posY};
+            yaw = grab.yaw0 - angDelta(yawC, grab.yawC);          // inverted
+            pitch = clamp(grab.pitch0 - (pitchC - grab.pitchC), -1.3, 1.3); // inverted
+            posY = grab.posY0 + (p.y - grab.py) * 1.5;
+          }
+          if (sy) scl = clamp(scl * (1 - sy*dt*0.8), 0.3, 3);
+        } else grab = null;
+      } else grab = null;
     } else {
-      if (sy){
-        if (grip) dist = THREE.MathUtils.clamp(dist - sy*dt*1.6, -3, 3);     // grip: distance
-        else scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3);     // zoom
+      if (edge(3)){ menuOn = !menuOn; panelGroup.visible = menuOn; needDraw=true; }           // stick click
+      if (advMode){
+        if (sy){
+          if (grip) dist = clamp(dist - sy*dt*1.6, -3, 3);
+          else scl = clamp(scl * (1 - sy*dt*0.8), 0.3, 3);
+        }
+        if (sx && performance.now() > seekCool && Math.abs(sx) > 0.6 && video && video.duration){
+          video.currentTime = clamp(video.currentTime + (sx>0?10:-10), 0, video.duration);
+          seekCool = performance.now() + 400; needDraw=true;
+        }
+        if (edge(4)){
+          const id = grip ? 'smo' : 'sim';
+          const el = $(id); const max = grip? 0.25 : 0.35;
+          let v = parseFloat(el.value) + 0.02; if (v > max) v = 0.02;
+          el.value = v; applyKey(); needDraw=true;
+        }
+        if (edge(5)){ yaw=0; pitch=0; posY=0; dist=0; scl=1; applyTransform(); needDraw=true; }
       }
-      if (sx && performance.now() > seekCool && Math.abs(sx) > 0.6 && video && video.duration){
-        video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + (sx>0?10:-10)));
-        seekCool = performance.now() + 400;
-      }
-      if (edge(4)){                                                          // X
-        const id = grip ? 'smo' : 'sim';
-        const el = $(id); const max = grip? 0.4 : 0.6;
-        let v = parseFloat(el.value) + 0.02; if (v > max*0.55) v = 0.02;
-        el.value = v; applyKey();
-      }
-      if (edge(5)){ yaw=0; pitch=0; posY=0; dist=0; scl=1; }                 // Y
-      if (edge(3)){ panelOn = !panelOn; }                                    // stick click
     }
   }
-  if (group){
-    group.rotation.order = 'YXZ';
-    group.rotation.y = yaw;
-    group.rotation.x = pitch;
-    group.position.y = posY;
-    group.position.z = dist;
-    group.scale.setScalar(scl);
-  }
-  if (panel) panel.visible = panelOn;
+  applyTransform();
 }
 
 // ---------- session ----------
@@ -330,7 +517,7 @@ async function start(){
   const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
 
   group = new THREE.Group();
-  mats = []; yaw=0; pitch=0; posY=0; dist=0; scl=1;
+  mats = []; yaw=0; pitch=0; posY=0; dist=0; scl=1; grab=null;
   if (sbs && detail.is3d !== false){
     for (const eye of [0,1]){
       const m = makeMat(tex); eyeUV(m, eye, true, matteTB);
@@ -343,8 +530,26 @@ async function start(){
     group.add(new THREE.Mesh(geo, m)); mats.push(m);
   }
   scene.add(group);
-  scene.add(makePanel());
+  scene.add(makeMenu());
+  menuOn = true; popOn = false; popMesh.visible = false;
   applyKey();
+
+  // controllers + lasers
+  const ctrls = {};
+  for (const i of [0,1]){
+    const c = renderer.xr.getController(i);
+    c.addEventListener('connected', e => {
+      c.userData.hand = e.data.handedness;
+      ctrls[e.data.handedness] = c;
+      const l = makeLaser();
+      c.add(l.line); scene.add(l.dot);
+      lasers[e.data.handedness] = l;
+    });
+    c.addEventListener('disconnected', () => { if (c.userData.hand) delete ctrls[c.userData.hand]; });
+    c.addEventListener('selectstart', () => c.userData.hand && onSelectStart(c.userData.hand, c));
+    c.addEventListener('selectend',   () => c.userData.hand && onSelectEnd(c.userData.hand, c));
+    scene.add(c);
+  }
 
   session = await navigator.xr.requestSession('immersive-ar');
   session.addEventListener('end', cleanup);
@@ -354,8 +559,21 @@ async function start(){
   let last = performance.now(), pTick = 0;
   renderer.setAnimationLoop((time, frame) => {
     const now = performance.now(), dt = Math.min(0.1, (now-last)/1000); last = now;
+    xrCam = renderer.xr.getCamera();
     pollInput(dt, frame);
-    if (panelOn && now > pTick){ drawPanel(); pTick = now + 250; }
+    updateTriggers(ctrls);
+    // lasers + hover dots only while the menu is up
+    for (const hand of ['left','right']){
+      const l = lasers[hand], c = ctrls[hand];
+      if (!l || !c) continue;
+      l.line.visible = menuOn;
+      if (menuOn){
+        const hit = hitUI(c);
+        l.dot.visible = !!hit;
+        if (hit) l.dot.position.copy(hit.point);
+      } else l.dot.visible = false;
+    }
+    if (menuOn && (needDraw || now > pTick)){ drawMenus(); needDraw=false; pTick = now + 300; }
     renderer.render(scene, cam);
   });
 }
@@ -365,7 +583,9 @@ function cleanup(){
   try{ session && session.end(); }catch(e){}
   try{ video && video.pause(); }catch(e){}
   try{ renderer && renderer.domElement.remove(); renderer.dispose(); }catch(e){}
-  session=null; renderer=null; video=null; mats=[]; group=null; panel=null;
+  session=null; renderer=null; video=null; mats=[]; group=null;
+  panelGroup=null; mainMesh=null; popMesh=null; mainCtx=null; popCtx=null;
+  lasers={}; drag=null; moveMenu=null; triggerDown={}; grab=null; xrCam=null;
   prevBtn.left={}; prevBtn.right={};
 }
 
