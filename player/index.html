@@ -41,8 +41,10 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   </div>
   <div id="legend">
     In headset:<br>
-    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> yaw / pitch
-    (hold grip: height) &nbsp; <b>L-stick</b> zoom / seek &plusmn;10s (hold grip: distance)<br>
+    <b>Hold right grip = grab the scene</b> — twist for yaw, tilt for pitch, lift for
+    height, right stick zooms while held<br>
+    <b>A</b> play/pause &nbsp; <b>B</b> exit &nbsp; <b>R-stick</b> yaw / pitch (fine) &nbsp;
+    <b>L-stick</b> zoom / seek &plusmn;10s (hold grip: distance)<br>
     <b>X</b> key strength (hold grip: softness) &nbsp; <b>Y</b> reset position &nbsp;
     <b>R-stick click</b> save settings to file &nbsp; <b>L-stick click</b> hide panel
   </div>
@@ -60,7 +62,8 @@ let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null
 let mats=[], group=null, panel=null, panelTex=null, panelCtx=null, panelOn=true;
 let yaw=0, pitch=0, posY=0, dist=0, scl=1, saveNote='', noteUntil=0;
 const prevBtn = {left:{}, right:{}};
-let seekCool=0;
+let seekCool=0, grab=null;
+function angDelta(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
 
 // ---------- library ----------
 async function loadLib(){
@@ -215,8 +218,8 @@ function drawPanel(){
   c.fillText(`key ${$('keycol').value}  strength ${(+$('sim').value).toFixed(2)}  soft ${(+$('smo').value).toFixed(2)}`, 40, 170);
   c.fillText(`yaw ${(yaw*57.3).toFixed(0)}°  pitch ${(pitch*57.3).toFixed(0)}°  height ${posY.toFixed(2)}  zoom ${scl.toFixed(2)}  dist ${dist.toFixed(2)}`, 40, 218);
   c.fillStyle = '#888'; c.font = '26px system-ui';
-  c.fillText('A play/pause  B exit  R-stick yaw/pitch (grip: height)  L-stick zoom/seek (grip: dist)', 40, 290);
-  c.fillText('X key± (grip: soft±)   Y reset   R-click save   L-click hide panel', 40, 330);
+  c.fillText('R-GRIP = grab: twist yaw, tilt pitch, lift height, +stick zoom', 40, 290);
+  c.fillText('A play/pause  B exit  R-stick yaw/pitch  L-stick zoom/seek (grip:dist)  X key±  Y reset  R-click save', 40, 330);
   if (performance.now() < noteUntil){
     c.fillStyle = '#4f4'; c.font = '32px system-ui';
     c.fillText(saveNote, 700, 66);
@@ -225,7 +228,7 @@ function drawPanel(){
 }
 
 // ---------- controller input ----------
-function pollInput(dt){
+function pollInput(dt, frame){
   if (!session) return;
   for (const src of session.inputSources){
     const gp = src.gamepad; if (!gp) continue;
@@ -239,10 +242,26 @@ function pollInput(dt){
     const grip = pressed(1);
 
     if (hand === 'right'){
-      if (sx) yaw -= sx * dt * 1.6;
-      if (sy){
-        if (grip) posY -= sy * dt * 0.55;                                    // grip: height
-        else pitch = THREE.MathUtils.clamp(pitch - sy*dt*1.2, -1.3, 1.3);    // pitch
+      if (grip && src.gripSpace && frame){
+        // grab mode: the scene follows the hand — twist for yaw, tilt for
+        // pitch, lift for height. Stick zooms while grabbing.
+        const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
+        if (pose){
+          const o = pose.transform.orientation, p = pose.transform.position;
+          const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+          const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q);
+          const yawC = Math.atan2(-fwd.x, -fwd.z);
+          const pitchC = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
+          if (!grab) grab = {yawC, pitchC, py:p.y, yaw0:yaw, pitch0:pitch, posY0:posY};
+          yaw = grab.yaw0 + angDelta(yawC, grab.yawC);
+          pitch = THREE.MathUtils.clamp(grab.pitch0 + (pitchC - grab.pitchC), -1.3, 1.3);
+          posY = grab.posY0 + (p.y - grab.py) * 1.5;
+        }
+        if (sy) scl = THREE.MathUtils.clamp(scl * (1 - sy*dt*0.8), 0.3, 3);  // zoom
+      } else {
+        grab = null;
+        if (sx) yaw -= sx * dt * 1.6;
+        if (sy) pitch = THREE.MathUtils.clamp(pitch - sy*dt*1.2, -1.3, 1.3);
       }
       if (edge(4)) video && (video.paused ? video.play() : video.pause());   // A
       if (edge(5)) session.end();                                            // B
@@ -333,9 +352,9 @@ async function start(){
   await renderer.xr.setSession(session);
 
   let last = performance.now(), pTick = 0;
-  renderer.setAnimationLoop(() => {
+  renderer.setAnimationLoop((time, frame) => {
     const now = performance.now(), dt = Math.min(0.1, (now-last)/1000); last = now;
-    pollInput(dt);
+    pollInput(dt, frame);
     if (panelOn && now > pTick){ drawPanel(); pTick = now + 250; }
     renderer.render(scene, cam);
   });
