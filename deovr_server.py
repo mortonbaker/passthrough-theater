@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import subprocess
 import threading
 import urllib.parse
@@ -23,6 +24,11 @@ THUMB_DIR = os.path.join(BASE, "thumbs")
 PLAYER_DIR = os.path.join(BASE, "player")
 CACHE_PATH = os.path.join(BASE, "cache.json")
 PORT = 8250
+# WebXR only exists in a secure context, so the player also listens on HTTPS
+# with a self-signed cert (accept the warning once in the headset).
+HTTPS_PORT = 8253
+CERT_FILE = os.path.join(BASE, "certs", "cert.pem")
+KEY_FILE = os.path.join(BASE, "certs", "key.pem")
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".m4v", ".mov"}
 
@@ -256,8 +262,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def base_url(self):
         # Derive from the Host header so LAN IP / hostname / Tailscale all work.
+        # Scheme must match the listener: an https page pointed at http media
+        # URLs is mixed content and Chromium blocks the video outright.
         host = self.headers.get("Host") or ("192.168.0.188:%d" % PORT)
-        return "http://" + host
+        scheme = "https" if getattr(self.server, "tls", False) else "http"
+        return scheme + "://" + host
 
     def send_json(self, obj):
         body = json.dumps(obj).encode("utf-8")
@@ -508,6 +517,15 @@ def main():
     load_cache()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True
+    if os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        tls_srv = ThreadingHTTPServer(("0.0.0.0", HTTPS_PORT), Handler)
+        tls_srv.daemon_threads = True
+        tls_srv.tls = True
+        tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
+        threading.Thread(target=tls_srv.serve_forever, daemon=True).start()
+        print("deovr-lan https (player) on :%d" % HTTPS_PORT, flush=True)
     print("deovr-lan serving %s on :%d" % (MEDIA_DIR, PORT), flush=True)
     srv.serve_forever()
 
