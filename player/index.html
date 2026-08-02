@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>deovr-lan player</title>
+<style>
+body{background:#111;color:#eee;font:15px/1.4 system-ui,sans-serif;margin:0;padding:20px}
+h1{font-size:18px;margin:0 0 4px}
+p.sub{color:#888;margin:0 0 20px}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.card{background:#1c1c1c;border-radius:8px;overflow:hidden;cursor:pointer}
+.card:hover{background:#262626}
+.card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#000}
+.card span{display:block;padding:8px 10px;font-size:13px}
+#stage{padding:20px 0}
+button{background:#2a6df4;color:#fff;border:0;border-radius:6px;padding:12px 22px;font-size:16px;cursor:pointer;margin-right:10px}
+button.grey{background:#333}
+#hud{position:fixed;left:0;right:0;bottom:0;background:rgba(10,10,10,.85);padding:10px 14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px}
+#hud input[type=range]{width:130px}
+#hud .wide{width:100%;display:flex;gap:10px;align-items:center}
+#seek{flex:1}
+#err{color:#f66;white-space:pre-wrap}
+canvas{position:fixed;inset:0;z-index:-1}
+</style>
+</head>
+<body>
+<div id="lib">
+  <h1>deovr-lan player</h1>
+  <p class="sub">passthrough player &mdash; pick a video, then Enter Passthrough</p>
+  <div id="grid"></div>
+</div>
+<div id="stage" hidden>
+  <h1 id="vtitle"></h1>
+  <p class="sub" id="vmeta"></p>
+  <button id="enter">Enter Passthrough</button>
+  <button id="back" class="grey">Back</button>
+  <p id="err"></p>
+</div>
+<div id="hud" hidden>
+  <div class="wide">
+    <button id="pp" style="padding:6px 14px">&#10074;&#10074;</button>
+    <input id="seek" type="range" min="0" max="100" step="0.1" value="0">
+    <span id="clock">0:00</span>
+    <button id="exit" class="grey" style="padding:6px 14px">Exit</button>
+  </div>
+  <label>key <input id="keycol" type="color" value="#000000"></label>
+  <label>similarity <input id="sim" type="range" min="0" max="0.6" step="0.005"></label>
+  <label>smooth <input id="smo" type="range" min="0" max="0.4" step="0.005"></label>
+  <label>rotate <button id="rot" class="grey" style="padding:4px 10px">90&deg;</button></label>
+  <button id="save" style="padding:6px 14px">Save to file</button>
+  <span id="saved"></span>
+</div>
+
+<script type="module">
+import * as THREE from './three.module.js';
+
+const FOV = {fisheye190:190, fisheye:180, mkx200:200, mkx220:220, rf52:190, vrca220:220};
+const $ = id => document.getElementById(id);
+let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, mats=[], rotY=0, group=null;
+
+// ---------- library ----------
+async function loadLib(){
+  const j = await (await fetch('/deovr')).json();
+  const grid = $('grid');
+  for (const it of j.scenes[0].list){
+    const id = it.video_url.split('/').pop();
+    const c = document.createElement('div');
+    c.className='card';
+    c.innerHTML = `<img loading="lazy" src="/thumb/${id}.jpg"><span>${it.title}</span>`;
+    c.onclick = () => pick(id);
+    grid.appendChild(c);
+  }
+}
+async function pick(id){
+  vidId = id;
+  detail = await (await fetch('/video/'+id)).json();
+  $('lib').hidden = true; $('stage').hidden = false;
+  $('vtitle').textContent = detail.title;
+  $('vmeta').textContent = `${detail.screenType} | ${detail.stereoMode} | ${detail.videoLength}s`
+      + (detail.alphaPack ? ` | matte:${detail.alphaPack}` : '')
+      + (detail.chroma ? ' | chroma from sidecar' : '');
+  const ch = detail.chroma || {};
+  $('keycol').value = ch.color || '#000000';
+  $('sim').value = ch.similarity ?? 0.10;
+  $('smo').value = ch.smoothness ?? 0.08;
+}
+$('back').onclick = () => { $('stage').hidden = true; $('lib').hidden = false; };
+
+// ---------- geometry ----------
+function fisheyeGeo(fovDeg, R=8, seg=72){
+  const tMax = THREE.MathUtils.degToRad(fovDeg/2);
+  const pos=[], uv=[], idx=[];
+  for (let j=0;j<=seg;j++) for (let i=0;i<=seg;i++){
+    const t = j/seg*tMax, p = i/seg*Math.PI*2;
+    const st=Math.sin(t), ct=Math.cos(t);
+    pos.push(R*st*Math.cos(p), R*st*Math.sin(p), -R*ct);
+    const r = (t/tMax)*0.5;                       // equidistant: edge of circle = edge of eye square
+    uv.push(0.5 + r*Math.cos(p), 0.5 + r*Math.sin(p));
+  }
+  for (let j=0;j<seg;j++) for (let i=0;i<seg;i++){
+    const a=j*(seg+1)+i, b=a+1, c=a+seg+1, d=c+1;
+    idx.push(a,b,c, b,d,c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx);
+  return g;
+}
+function domeGeo(full){ // half (180) or full (360) equirect sphere, viewed from inside
+  const g = new THREE.SphereGeometry(8, 72, 72, full? 0 : Math.PI/2, full? Math.PI*2 : Math.PI);
+  g.scale(-1,1,1);
+  return g;
+}
+
+// ---------- material ----------
+const FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D map;
+uniform vec2 uvOff, uvScl, matteOff;
+uniform int useMatte, useKey;
+uniform vec3 keyColor;
+uniform float similarity, smoothness, spill;
+void main(){
+  vec2 cuv = vUv*uvScl + uvOff;
+  vec4 c = texture2D(map, cuv);
+  float a = 1.0;
+  if (useMatte==1){
+    a = texture2D(map, cuv + matteOff).r;
+  } else if (useKey==1){
+    float d = distance(c.rgb, keyColor);
+    a = smoothstep(similarity, similarity+smoothness, d);
+    if (spill>0.5){ float g=max(c.r,c.b); c.g = min(c.g, g + (c.g-g)*0.2); }
+  }
+  if (a < 0.01) discard;
+  gl_FragColor = vec4(c.rgb, a);
+}`;
+const VERT = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
+
+function makeMat(tex){
+  return new THREE.ShaderMaterial({
+    transparent:true, side:THREE.DoubleSide, depthWrite:false,
+    uniforms:{
+      map:{value:tex},
+      uvOff:{value:new THREE.Vector2(0,0)}, uvScl:{value:new THREE.Vector2(1,1)},
+      matteOff:{value:new THREE.Vector2(0,0)}, useMatte:{value:0}, useKey:{value:1},
+      keyColor:{value:new THREE.Color($('keycol').value)},
+      similarity:{value:parseFloat($('sim').value)},
+      smoothness:{value:parseFloat($('smo').value)},
+      spill:{value:0},
+    },
+    vertexShader:VERT, fragmentShader:FRAG,
+  });
+}
+
+// SBS + optional top/bottom matte pack. flipY texture: v=1 is image top.
+function eyeUV(mat, eye, sbs, matteTB){
+  const sx = sbs? 0.5 : 1, ox = (sbs && eye===1)? 0.5 : 0;
+  if (matteTB){ // colour in top half, matte directly below
+    mat.uniforms.uvScl.value.set(sx, 0.5);
+    mat.uniforms.uvOff.value.set(ox, 0.5);
+    mat.uniforms.matteOff.value.set(0, -0.5);
+    mat.uniforms.useMatte.value = 1;
+  } else {
+    mat.uniforms.uvScl.value.set(sx, 1);
+    mat.uniforms.uvOff.value.set(ox, 0);
+  }
+}
+
+// ---------- session ----------
+$('enter').onclick = async () => {
+  $('err').textContent='';
+  try { await start(); }
+  catch(e){ $('err').textContent = 'failed: ' + (e.message||e); cleanup(); }
+};
+
+async function start(){
+  if (!navigator.xr) throw new Error('WebXR unavailable in this browser');
+  const url = detail.encodings[0].videoSources[0].url;
+  video = document.createElement('video');
+  video.src = url; video.loop = true; video.playsInline = true;
+  await video.play();
+
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(1);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+  scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 100);
+  cam.layers.enable(1);
+
+  const tex = new THREE.VideoTexture(video);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+
+  const st = detail.screenType || 'fisheye190';
+  const sbs = (detail.stereoMode || 'sbs') === 'sbs';
+  const matteTB = detail.alphaPack === 'tb';
+  const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
+
+  group = new THREE.Group();
+  mats = [];
+  if (sbs && detail.is3d !== false){
+    for (const eye of [0,1]){
+      const m = makeMat(tex); eyeUV(m, eye, true, matteTB);
+      const mesh = new THREE.Mesh(geo, m);
+      mesh.layers.set(eye+1);
+      group.add(mesh); mats.push(m);
+    }
+  } else {
+    const m = makeMat(tex); eyeUV(m, 0, false, matteTB);
+    group.add(new THREE.Mesh(geo, m)); mats.push(m);
+  }
+  group.rotation.y = rotY;
+  scene.add(group);
+  applyKey();
+
+  session = await navigator.xr.requestSession('immersive-ar', {
+    optionalFeatures:['dom-overlay'], domOverlay:{root: $('hud')},
+  });
+  session.addEventListener('end', cleanup);
+  renderer.xr.setReferenceSpaceType('local');
+  await renderer.xr.setSession(session);
+  $('hud').hidden = false;
+  renderer.setAnimationLoop(() => {
+    if (video && !$('seek').dragging) { $('seek').value = video.currentTime/ (video.duration||1) * 100;
+      $('clock').textContent = fmt(video.currentTime); }
+    renderer.render(scene, cam);
+  });
+}
+
+function cleanup(){
+  try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
+  try{ session && session.end(); }catch(e){}
+  try{ video && video.pause(); }catch(e){}
+  try{ renderer && renderer.domElement.remove(); renderer.dispose(); }catch(e){}
+  session=null; renderer=null; video=null; mats=[]; group=null;
+  $('hud').hidden = true;
+}
+
+// ---------- hud ----------
+function applyKey(){
+  for (const m of mats){
+    m.uniforms.keyColor.value.set($('keycol').value);
+    m.uniforms.similarity.value = parseFloat($('sim').value);
+    m.uniforms.smoothness.value = parseFloat($('smo').value);
+    const c = new THREE.Color($('keycol').value);
+    m.uniforms.spill.value = (c.g > c.r*1.5 && c.g > c.b*1.5) ? 1 : 0;
+  }
+}
+for (const id of ['keycol','sim','smo']) $(id).oninput = applyKey;
+$('rot').onclick = () => { rotY += Math.PI/2; if (group) group.rotation.y = rotY; };
+$('pp').onclick = () => { if(!video) return; video.paused? video.play() : video.pause(); };
+$('seek').oninput = e => { if (video && video.duration) video.currentTime = e.target.value/100*video.duration; };
+$('exit').onclick = cleanup;
+$('save').onclick = async () => {
+  const body = {chroma:{color:$('keycol').value, similarity:parseFloat($('sim').value), smoothness:parseFloat($('smo').value)}};
+  const r = await fetch('/sidecar/'+vidId, {method:'POST', body: JSON.stringify(body)});
+  $('saved').textContent = r.ok? 'saved' : 'save failed';
+  setTimeout(()=>$('saved').textContent='', 3000);
+};
+const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+loadLib();
+</script>
+</body>
+</html>

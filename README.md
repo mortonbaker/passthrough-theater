@@ -106,6 +106,22 @@ journalctl -u deovr -f
 Config is four constants at the top of `deovr_server.py` (`MEDIA_DIR`, `THUMB_DIR`,
 `CACHE_PATH`, `PORT`).
 
+## Player
+
+`/player/` is a self-hosted WebXR passthrough player for Quest — open
+`http://<lan-ip>:8250/player/` in the headset's browser, pick a video, Enter
+Passthrough. No sideloading, no DeoVR.
+
+- Projection and stereo mode come from the same manifest DeoVR uses
+- Chroma key runs in a fragment shader; key colour / similarity / smoothness are
+  tunable live from the in-headset overlay and **Save to file** writes them to the
+  video's JSON sidecar, so settings persist per file
+- `"alphaPack": "tb"` in a sidecar switches that video from keying to a true
+  packed matte: frame is colour on top, greyscale matte directly below
+  (double-height video, e.g. 4320x4320 for a 4320x2160 master)
+
+three.js is vendored beside the page; nothing loads from the internet.
+
 ## Caveats
 
 - No auth. It binds `0.0.0.0` and serves anything in the media directory. Keep it on

@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE = "/srv/deovr"
 MEDIA_DIR = os.path.join(BASE, "media")
 THUMB_DIR = os.path.join(BASE, "thumbs")
+PLAYER_DIR = os.path.join(BASE, "player")
 CACHE_PATH = os.path.join(BASE, "cache.json")
 PORT = 8250
 
@@ -276,6 +277,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.homepage()
             if path in ("/deovr", "/index.json"):
                 return self.index()
+            if path == "/player" or path.startswith("/player/"):
+                return self.player_static(path)
             if path.startswith("/video/"):
                 return self.detail(path[len("/video/"):])
             if path.startswith("/thumb/"):
@@ -290,6 +293,54 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(500, str(exc))
             except Exception:
                 pass
+
+    def player_static(self, path):
+        """Serve the WebXR player. Modules need a JS MIME type or Chromium refuses them."""
+        name = os.path.basename(path[len("/player"):].lstrip("/")) or "index.html"
+        fp = os.path.join(PLAYER_DIR, name)
+        if not os.path.isfile(fp):
+            return self.send_error(404, "not found")
+        ext = name.rsplit(".", 1)[-1].lower()
+        ctype = {"html": "text/html; charset=utf-8",
+                 "js": "application/javascript",
+                 "css": "text/css"}.get(ext, "application/octet-stream")
+        with open(fp, "rb") as fh:
+            data = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        """POST /sidecar/<id> with a JSON body: merge into the video's sidecar file.
+
+        Lets the in-headset player tune the chroma key once and persist it next
+        to the video, so every future play reads the same settings.
+        """
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/sidecar/"):
+            return self.send_error(404, "not found")
+        vid = path[len("/sidecar/"):]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 65536:
+                return self.send_error(413, "bad size")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError
+        except Exception:
+            return self.send_error(400, "bad json")
+        for it in scan():
+            if it["id"] != vid:
+                continue
+            sc = os.path.splitext(it["path"])[0] + ".json"
+            current = sidecar(it["path"])
+            current.update(payload)
+            with open(sc, "w") as fh:
+                json.dump(current, fh, indent=2)
+            return self.send_json({"ok": True})
+        self.send_error(404, "no such video")
 
     def do_HEAD(self):
         # DeoVR probes with HEAD before streaming.
@@ -380,6 +431,10 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
             }
             if it.get("chapters"):
                 detail["timeStamps"] = it["chapters"]
+            # player-only metadata from sidecars, ignored by DeoVR
+            for extra in ("chroma", "alphaPack"):
+                if it.get(extra) is not None:
+                    detail[extra] = it[extra]
             return self.send_json(detail)
         self.send_error(404, "no such video")
 
