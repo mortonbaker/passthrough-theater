@@ -66,28 +66,41 @@ def vid_for(name):
     return hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
 
 
-def duration_of(path):
-    """Seconds via ffprobe, cached by path+mtime so re-scans are instant."""
+def probe(path):
+    """Duration, height and codec via one ffprobe, cached by path+mtime."""
+    fallback = {"length": 0, "height": 2160, "codec": "h264"}
     try:
-        key = "dur:%s:%d" % (path, int(os.path.getmtime(path)))
+        key = "probe:%s:%d" % (path, int(os.path.getmtime(path)))
     except OSError:
-        return 0
+        return fallback
     with _cache_lock:
         if key in _cache:
             return _cache[key]
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "format=duration:stream=height,codec_name",
+             "-of", "default=noprint_wrappers=1", path],
             capture_output=True, text=True, timeout=60,
         )
-        secs = int(float(out.stdout.strip()))
+        fields = {}
+        for line in out.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k.strip()] = v.strip()
+        # DeoVR keys its decoder off this name, so hevc must not be called h264.
+        raw = fields.get("codec_name", "").lower()
+        info = {
+            "length": int(float(fields.get("duration", 0) or 0)),
+            "height": int(fields.get("height", 0) or 0) or 2160,
+            "codec": "h265" if raw in ("hevc", "h265") else "h264",
+        }
     except Exception:
-        secs = 0
+        info = fallback
     with _cache_lock:
-        _cache[key] = secs
+        _cache[key] = info
         save_cache()
-    return secs
+    return info
 
 
 def layout_for(name):
@@ -128,12 +141,15 @@ def scan():
             continue
         screen, stereo, is3d = layout_for(name)
         title = os.path.splitext(name)[0].replace("_", " ").strip()
+        info = probe(path)
         entry = {
             "id": vid_for(name),
             "name": name,
             "path": path,
             "title": title[:120],
-            "length": duration_of(path),
+            "length": info["length"],
+            "height": info["height"],
+            "codec": info["codec"],
             "screen": screen,
             "stereo": stereo,
             "is3d": is3d,
@@ -253,8 +269,8 @@ class Handler(BaseHTTPRequestHandler):
                 "stereoMode": it["stereo"],
                 "thumbnailUrl": "%s/thumb/%s.jpg" % (base, it["id"]),
                 "encodings": [{
-                    "name": "h264",
-                    "videoSources": [{"resolution": 2160, "url": url}],
+                    "name": it["codec"],
+                    "videoSources": [{"resolution": it["height"], "url": url}],
                 }],
             })
         self.send_error(404, "no such video")
