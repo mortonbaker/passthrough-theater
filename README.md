@@ -170,9 +170,14 @@ ports, cert paths). HTTPS activates automatically when `certs/cert.pem` and
 
 ## Caveats
 
-- **No auth.** Anything on your LAN can browse and stream the library, and the
-  sidecar endpoint accepts writes. Keep it on a trusted network or behind a
-  VPN such as Tailscale.
+- **No auth.** Anything on your LAN can browse and stream the library, and
+  `POST /sidecar/<id>` accepts writes without credentials. Sidecar input is
+  key-whitelisted so it cannot redirect file paths, but treat the whole service
+  as trusted-network-only: run it on a LAN you control or behind a VPN such as
+  Tailscale. Do not port-forward it.
+- Everything binds `0.0.0.0`, because headsets generally have no VPN client and
+  must reach the player over the LAN. If your headset *can* join your VPN, bind
+  to that interface instead.
 - **No transcoding.** Files must already be decodable by the headset — for a
   Quest that means H.264/H.265 MP4. 4K+ HEVC in the browser player depends on
   hardware decode.

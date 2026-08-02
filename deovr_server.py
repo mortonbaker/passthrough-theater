@@ -186,11 +186,21 @@ def is_faststart(path):
     return True  # unknown container: assume fine rather than nag
 
 
+# Only these may come from a sidecar. Structural fields (path, name, id) are
+# deliberately excluded: they feed ffmpeg and the filesystem, so letting a JSON
+# file override them would turn a sidecar into arbitrary file read and SSRF.
+SIDECAR_KEYS = frozenset(
+    ("title", "screen", "stereo", "is3d", "chapters", "chroma", "alphaPack"))
+
+
 def sidecar(path):
     """Optional <video>.json next to the file overrides any guess."""
     try:
         with open(os.path.splitext(path)[0] + ".json") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if k in SIDECAR_KEYS}
     except Exception:
         return {}
 
@@ -340,6 +350,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except Exception:
             return self.send_error(400, "bad json")
+        rejected = set(payload) - SIDECAR_KEYS
+        if rejected:
+            return self.send_error(400, "unsupported keys: %s" % ",".join(sorted(rejected)))
         for it in scan():
             if it["id"] != vid:
                 continue
