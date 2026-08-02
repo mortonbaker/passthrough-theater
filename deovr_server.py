@@ -32,8 +32,8 @@ KEY_FILE = os.path.join(BASE, "certs", "key.pem")
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".m4v", ".mov"}
 
-# Filename tokens -> DeoVR screenType. SLR/CzechVR/etc. encode projection in the
-# filename, so we can set the lens correctly without any manual tagging.
+# Filename tokens -> DeoVR screenType. Most VR studios and tools encode the
+# projection in the filename, so the lens is set correctly without manual tagging.
 SCREEN_TOKENS = [
     ("MKX220", "mkx220"),
     ("MKX200", "mkx200"),
@@ -381,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         page = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>deovr-lan</title>
+<title>Passthrough Theater</title>
 <link rel="alternate" type="application/json" href="/deovr">
 <style>
 body{background:#111;color:#eee;font:15px/1.4 system-ui,sans-serif;margin:0;padding:24px}
@@ -394,7 +394,7 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
 .c span{display:block;padding:10px 12px 2px;font-weight:500}
 .c em{display:block;padding:0 12px 12px;color:#888;font-style:normal;font-size:13px}
 </style></head><body>
-<h1>deovr-lan &middot; %d video%s</h1>
+<h1>Passthrough Theater &middot; %d video%s</h1>
 <p>In DeoVR enter <code>%s</code> &nbsp;|&nbsp; manifest at <code>/deovr</code></p>
 <div class="g">%s</div></body></html>""" % (
             len(items), "" if len(items) == 1 else "s", base, cards)

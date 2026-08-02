@@ -1,134 +1,183 @@
-# deovr-lan
+# Passthrough Theater
 
-A small DeoVR-compatible media server for streaming VR video off your own LAN to a
-headset. Point DeoVR at the box, get a thumbnail grid, play with the right lens and
-stereo mode. No cloud, no account, no scraping.
+A self-hosted VR media server and mixed-reality video player for your LAN. Drop
+immersive videos on a Linux box; watch them on a Quest either in any
+DeoVR-compatible player or in the built-in WebXR **passthrough player**, which
+composites the subject into your real room with chroma keying or a true alpha
+matte.
 
-Python standard library only — no pip install, no Docker, no Node.
+Python standard library plus `ffmpeg` on the server, vendored three.js in the
+player. No cloud, no accounts, no app installs, no build step.
 
-## Why this exists
+Good for VR renders and AI-generated immersive video, 180°/360° camera footage,
+and any fisheye or equirect stereo content you want served locally.
 
-[XBVR](https://github.com/xbapps/xbvr) and [deovr-local-server](https://github.com/clear-gh/deovr-local-server)
-already cover this ground and cover it well. Use XBVR if you want a real library
-manager with scraped metadata, cast, and tags.
+## What you get
 
-This is the other end of the spectrum: one file, no dependencies, reads projection
-straight off the filename, and serves byte ranges correctly so seeking in a 4K
-fisheye file doesn't stall. It exists because a systemd unit and 300 lines of stdlib
-were less work than maintaining a Docker stack for a job this small.
+- **Media server** (`:8250`) — scans a folder, reads projection/stereo layout
+  from filenames, serves a browsable thumbnail gallery and a
+  DeoVR-compatible JSON API with correct per-file metadata
+- **WebXR passthrough player** (`:8253/player/`, HTTPS) — runs in the Quest's
+  own browser as an immersive-AR session: your video keyed over the real room,
+  laser-pointer menus, per-file settings that persist on the server
+- **Sidecar metadata** — chroma key values, projection overrides, chapters, and
+  matte mode live in a JSON file next to each video, editable from inside the
+  headset
 
-## Install
+## Quick start
 
-On the server (Debian/Ubuntu, needs `ffmpeg` and `python3`):
+On the server (Debian/Ubuntu-ish, needs `python3`, `ffmpeg`, `openssl`):
 
 ```bash
-git clone https://github.com/mortonbaker/deovr-lan.git
-cd deovr-lan
+git clone https://github.com/mortonbaker/passthrough-theater.git
+cd passthrough-theater
 sudo ./install.sh
 ```
 
-Drop videos in `/srv/deovr/media`, then open `http://<lan-ip>:8250` in DeoVR's
-address bar.
+Drop videos in `/srv/deovr/media`, then:
 
-Nothing to re-index — the library is rescanned per request. Durations are cached by
-mtime and thumbnails are generated once on first view.
+| Client | URL |
+| --- | --- |
+| Passthrough player (headset browser) | `https://<lan-ip>:8253/player/` |
+| DeoVR-compatible players | `http://<lan-ip>:8250` |
+| Desktop browser gallery | `http://<lan-ip>:8250` |
 
-## Projection detection
+The player URL must be the **https** one — WebXR only exists in a secure
+context. The install script generates a self-signed certificate; accept the
+browser warning once.
 
-Projection and stereo mode are read from the filename, so the naming most VR sites
-already use works untouched.
+No re-indexing, ever: the library rescans per request, durations are cached by
+mtime, thumbnails generate on first view.
+
+## Filename conventions
+
+Projection and stereo mode are parsed from the filename, matching the naming
+most VR tools already produce:
 
 | Filename contains | screenType |
 | --- | --- |
 | `MKX200`, `MKX220` | `mkx200`, `mkx220` |
 | `FISHEYE190` | `fisheye190` |
 | `RF52`, `VRCA220` | `rf52`, `vrca220` |
-| `_360` | `sphere` |
+| `_360` | `sphere` (360°) |
 | *(default)* | `dome` (180°) |
 
-Stereo defaults to SBS. `_TB` gives top/bottom, `_MONO` or `_2D` gives flat 2D.
+Stereo defaults to side-by-side. `_TB` = top/bottom, `_MONO` or `_2D` = flat.
 
-To override a file that guesses wrong, put a JSON sidecar next to it —
-`My Video.mp4` gets `My Video.json`:
+Example: `sunset_flight_2160p_FISHEYE190_alpha.mp4` → fisheye 190°, SBS stereo.
+
+## The passthrough player
+
+Enter on the flat page, then everything is laser + trigger:
+
+| Input | Action |
+| --- | --- |
+| Trigger on the menu | click buttons, grab and drag sliders |
+| Trigger away from the menu | show / hide the menu |
+| **Hold** trigger away from the menu | move the menu to where you point |
+| **A** / **B** | play-pause / exit (always active) |
+| Left stick click | show / hide menu (no-laser fallback) |
+
+The **⚙ popup** holds everything: key colour presets, key strength and
+softness, and sliders for yaw, pitch, height, zoom, and distance — so the whole
+player is usable with no gestures at all.
+
+**ADV mode** (toggle on the menu bar, remembered across sessions) adds a
+gesture layer:
+
+| Gesture | Action |
+| --- | --- |
+| Hold right grip | **grab the scene** — twist for yaw, tilt for pitch, lift for height; right stick zooms while held |
+| Left stick ↑↓ | zoom (hold grip: distance) |
+| Left stick ←→ flick | seek ±10 s |
+| **X** | step key strength (hold grip: softness) |
+| **Y** | reset position |
+| Right stick click | save settings to the file |
+
+## Sidecar metadata
+
+`My Video.mp4` reads overrides from `My Video.json` beside it:
 
 ```json
-{ "screen": "fisheye190", "stereo": "tb", "title": "Custom title" }
+{
+  "title": "Custom title",
+  "screen": "fisheye190",
+  "stereo": "sbs",
+  "chroma": { "color": "#00ff00", "similarity": 0.12, "smoothness": 0.08 },
+  "alphaPack": "tb",
+  "chapters": [ { "ts": 0, "name": "Intro" }, { "ts": 95, "name": "Main" } ]
+}
 ```
 
-## Chapters
+- `chroma` — the player's key settings for this file. Saving from the headset
+  writes this block via `POST /sidecar/<id>`, so you tune once and it sticks.
+- `alphaPack: "tb"` — switch from keying to a **true packed matte** (below).
+- `chapters` — served to DeoVR-compatible players as `timeStamps`; embedded MP4
+  chapters are also read automatically.
 
-Embedded MP4 chapters are read with `ffprobe` and served to DeoVR as `timeStamps`,
-so they show up on the scrub bar. Files without them simply omit the field.
+## Packed alpha mattes
 
-To add chapters by hand, use the same sidecar:
+Chroma keying is a guess; a matte is the answer. If your pipeline produces a
+matte pass (renderers and segmentation models can emit one directly), pack it
+under the colour pass:
 
-```json
-{ "chapters": [ { "ts": 0, "name": "Intro" }, { "ts": 95, "name": "Main" } ] }
+```bash
+ffmpeg -i color.mp4 -i matte.mp4 -filter_complex "[0][1]vstack" \
+  -c:v libx265 -crf 18 -movflags +faststart out.mp4
 ```
 
-`ts` is seconds from the start.
+Frame layout: colour on top, greyscale matte (white = opaque) directly below,
+same width, double height. Set `"alphaPack": "tb"` in the sidecar and the
+player samples the matte for alpha instead of keying. Hair, shadows, and dark
+edges survive; nothing is guessed.
 
 ## Faststart
 
-MP4s written without `-movflags +faststart` keep their `moov` index *after* the
-video data. A streaming player can't resolve duration or seek points until it has
-pulled the entire file, which shows up as broken seeking and strange behaviour at
-the end of playback. ffmpeg and ComfyUI both produce these by default.
-
-The server logs a warning when it sees one. To fix every file in place:
+MP4s written without `-movflags +faststart` put their index after the video
+data, which breaks streaming seeks and end-of-file behaviour. Many encoders do
+this by default. The server logs a warning naming affected files; fix them all
+in place (lossless remux):
 
 ```bash
 ./optimize.sh /srv/deovr/media
 ```
 
-Remux only — lossless, no re-encode, and originals are left untouched if it fails.
-
 ## API
 
-| Route | Returns |
+| Route | Purpose |
 | --- | --- |
-| `GET /` or `/deovr` | DeoVR index JSON (scene list) |
-| `GET /video/<id>` | Per-video JSON with projection metadata |
-| `GET /thumb/<id>.jpg` | Poster frame, left eye, generated on demand |
-| `GET /media/<name>` | The file, with `Range` / `206` support |
+| `GET /` | thumbnail gallery (HTML) |
+| `GET /deovr` | DeoVR-compatible index JSON |
+| `GET /video/<id>` | per-video JSON: projection, stereo, codec, chroma, chapters |
+| `GET /thumb/<id>.jpg` | poster frame (generated once, left eye) |
+| `GET /media/<name>` | the file, with HTTP Range / 206 support |
+| `GET /player/` | the WebXR player |
+| `POST /sidecar/<id>` | merge a JSON body into the video's sidecar |
 
-URLs are built from the request's `Host` header, so the same server works over LAN
-IP, hostname, or a Tailscale address without reconfiguration.
+URLs are built from the request's Host header and scheme, so LAN IPs,
+hostnames, and reverse proxies all work unconfigured.
 
 ## Service
 
 ```bash
 sudo systemctl status deovr
-sudo systemctl restart deovr
 journalctl -u deovr -f
 ```
 
-Config is four constants at the top of `deovr_server.py` (`MEDIA_DIR`, `THUMB_DIR`,
-`CACHE_PATH`, `PORT`).
-
-## Player
-
-`/player/` is a self-hosted WebXR passthrough player for Quest — open
-`http://<lan-ip>:8250/player/` in the headset's browser, pick a video, Enter
-Passthrough. No sideloading, no DeoVR.
-
-- Projection and stereo mode come from the same manifest DeoVR uses
-- Chroma key runs in a fragment shader; key colour / similarity / smoothness are
-  tunable live from the in-headset overlay and **Save to file** writes them to the
-  video's JSON sidecar, so settings persist per file
-- `"alphaPack": "tb"` in a sidecar switches that video from keying to a true
-  packed matte: frame is colour on top, greyscale matte directly below
-  (double-height video, e.g. 4320x4320 for a 4320x2160 master)
-
-three.js is vendored beside the page; nothing loads from the internet.
+Config is a handful of constants at the top of `deovr_server.py` (media dir,
+ports, cert paths). HTTPS activates automatically when `certs/cert.pem` and
+`certs/key.pem` exist.
 
 ## Caveats
 
-- No auth. It binds `0.0.0.0` and serves anything in the media directory. Keep it on
-  a trusted LAN, or put it behind Tailscale.
-- No transcoding. Files must already be in a format the headset decodes — for a
-  Quest 3 that means H.264 or H.265 MP4.
-- Thumbnails come from a single frame 20% into the file.
+- **No auth.** Anything on your LAN can browse and stream the library, and the
+  sidecar endpoint accepts writes. Keep it on a trusted network or behind a
+  VPN such as Tailscale.
+- **No transcoding.** Files must already be decodable by the headset — for a
+  Quest that means H.264/H.265 MP4. 4K+ HEVC in the browser player depends on
+  hardware decode.
+- Thumbnails are a single frame from 20% in.
+- The player needs the self-signed cert accepted once per browser.
 
 ## License
 
