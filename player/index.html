@@ -806,7 +806,9 @@ function anchorUI(){
 let triggerDown={}, drag=null, aiming=null, menuGrab=null;
 function onSelectStart(hand, ctrl){
   const hit = hitUI(ctrl);
-  triggerDown[hand] = {t:performance.now(), overUI:!!hit};
+  // remember whether the menu was up when the press began: releasing the very
+  // press that hid it must not immediately bring it back
+  triggerDown[hand] = {t:performance.now(), overUI:!!hit, menuWas:menuOn};
   if (hit){
     if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
     else if (hit.widget) widgetClick(hit.panel, hit.widget);
@@ -821,7 +823,10 @@ function onSelectEnd(hand){
   if (aiming && aiming.hand===hand){ aiming=null; return; }
   // With the menu hidden there is nothing to point at, so any trigger brings it
   // back; while shown, only a brief click off-panel dismisses it.
-  if (!menuOn){ menuOn = true; needDraw = true; return; }
+  if (!menuOn){
+    if (td && !td.menuWas){ menuOn = true; needDraw = true; }   // it was already hidden
+    return;
+  }
   if (td && !td.overUI && performance.now()-td.t < 400){ menuOn = false; needDraw = true; }
 }
 function dragTo(hit){
