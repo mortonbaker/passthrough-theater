@@ -511,7 +511,9 @@ async function sendVoice(){
   voiceBusy=true; voiceStatus='thinking…'; needDraw=true;
   playQueue=[]; playing=false;
   try {
-    const r = await fetch('/voice/talk?sid='+SID, {method:'POST', body:blob,
+    // a video can bind its own voice via the "voice" sidecar key
+    const vq = (detail && detail.voice) ? '&voice='+encodeURIComponent(detail.voice) : '';
+    const r = await fetch('/voice/talk?sid='+SID+vq, {method:'POST', body:blob,
       headers:{'Content-Type': blob.type||'audio/webm'}});
     const j = await r.json();
     if (!j.audio){ voiceStatus = j.error ? ('error: '+j.error) : (j.note||'nothing heard'); }

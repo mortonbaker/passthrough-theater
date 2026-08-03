@@ -194,7 +194,8 @@ def is_faststart(path):
 # deliberately excluded: they feed ffmpeg and the filesystem, so letting a JSON
 # file override them would turn a sidecar into arbitrary file read and SSRF.
 SIDECAR_KEYS = frozenset(
-    ("title", "screen", "stereo", "is3d", "chapters", "chroma", "alphaPack"))
+    ("title", "screen", "stereo", "is3d", "chapters", "chroma", "alphaPack",
+     "voice"))
 
 
 def sidecar(path):
@@ -494,7 +495,7 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
             if it.get("chapters"):
                 detail["timeStamps"] = it["chapters"]
             # player-only metadata from sidecars, ignored by DeoVR
-            for extra in ("chroma", "alphaPack"):
+            for extra in ("chroma", "alphaPack", "voice"):
                 if it.get(extra) is not None:
                     detail[extra] = it[extra]
             return self.send_json(detail)
