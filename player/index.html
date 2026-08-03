@@ -33,6 +33,12 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   <p class="sub">tap a video to enter passthrough &mdash; browsing, settings and voice are all in-headset</p>
   <div id="grid"></div>
   <p id="err"></p>
+  <div id="legend">
+    <b>Trigger</b> points and clicks &middot; away from a panel it hides/shows the bar,
+    hold to re-aim it<br>
+    <b>&#9776;</b> library &nbsp; <b>&#127908;</b> hands-free voice &nbsp;
+    <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
+  </div>
 </div>
 <div id="stage" hidden>
   <img id="sthumb" alt="">
@@ -42,13 +48,8 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
     <button id="go">Enter VR</button>
     <button id="cancel" class="grey">Back</button>
   </div>
+  <p id="sdiag" style="color:#777;font-size:13px;margin-top:16px"></p>
   <p id="err2" style="color:#f66"></p>
-  <div id="legend">
-    <b>Trigger</b> points and clicks &middot; away from a panel it hides/shows the bar,
-    hold to re-aim it<br>
-    <b>&#9776;</b> library &nbsp; <b>&#127908;</b> hands-free voice &nbsp;
-    <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
-  </div>
 </div>
 
 <script type="module">
@@ -78,7 +79,7 @@ const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
 
 /* ============================ state ============================ */
 let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, xrCam=null;
-let mats=[], group=null, uiRoot=null;
+let mats=[], group=null, uiRoot=null, videoTex=null;
 let yaw=0, pitch=0, posY=0, dist=0, scl=1;
 let advMode = localStorage.getItem('advMode') === '1';
 let screenMode = 'bar';                       // 'bar' | 'browse'
@@ -665,8 +666,8 @@ async function playVideo(id){
   screenMode='bar'; syncScreens();
 }
 function rebuildScreen(){
-  if (!group) return;
-  const tex = mats[0] && mats[0].uniforms.map.value;
+  if (!group || !videoTex) return;
+  const tex = videoTex;          // module-scoped: mats is empty on first build
   for (const ch of group.children.slice()) group.remove(ch);
   mats = [];
   const st = detail.screenType || 'fisheye190';
@@ -862,21 +863,41 @@ async function select(id){
   $('stage').hidden = false;
   try {
     const d = await (await fetch('/video/'+id)).json();
-    // permission prompt must happen out here: it cannot be shown once immersed
-    try { await ensureMic(); } catch(e){ voiceStatus = 'mic not allowed'; }
+    // Set this BEFORE touching the mic: if the permission prompt is ignored it
+    // never settles, and gating on it left Enter VR doing nothing at all.
     pending = {id, detail:d};
     $('smeta').textContent = `${d.screenType} · ${d.stereoMode} · ${fmt(d.videoLength||0)}`
       + (d.voice ? ` · voice: ${d.voice}` : '');
+    diag();
+    // permission prompt must happen out here: it cannot be shown once immersed
+    ensureMic().catch(() => { voiceStatus = 'mic not allowed'; });
   } catch(e){
     $('err2').textContent = 'could not load: ' + (e.message||e);
   }
 }
+async function diag(){
+  const bits = [];
+  bits.push(location.protocol === 'https:' ? 'https ✓' : 'NOT https ✗');
+  bits.push(navigator.xr ? 'WebXR ✓' : 'no navigator.xr ✗');
+  if (navigator.xr){
+    try { bits.push((await navigator.xr.isSessionSupported('immersive-ar'))
+      ? 'immersive-ar ✓' : 'immersive-ar UNSUPPORTED ✗'); }
+    catch(e){ bits.push('support check failed'); }
+  }
+  $('sdiag').textContent = bits.join('  ·  ');
+}
 $('cancel').onclick = () => { pending = null; $('stage').hidden = true; };
 $('go').onclick = async () => {
-  if (!pending || starting || session) return;
-  starting = true; $('err2').textContent = '';
-  try { await start(pending.id, pending.detail); }
-  catch(e){ $('err2').textContent = 'failed: ' + (e.message||e); cleanup(); }
+  if (starting || session) return;
+  if (!pending){ $('err2').textContent = 'still loading — tap again in a moment'; return; }
+  starting = true; $('err2').textContent = 'starting…';
+  try {
+    await start(pending.id, pending.detail);
+    $('err2').textContent = '';
+  } catch(e){
+    $('err2').textContent = 'failed: ' + (e && (e.message||e.name) || e);
+    cleanup();
+  }
   starting = false;
 };
 
@@ -909,8 +930,8 @@ async function start(id, pre){
   const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.03, 100);
   cam.layers.enable(1);
 
-  const tex = new THREE.VideoTexture(video);
-  tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
+  videoTex = new THREE.VideoTexture(video);
+  videoTex.colorSpace = THREE.SRGBColorSpace; videoTex.minFilter = THREE.LinearFilter;
   group = new THREE.Group(); scene.add(group);
   mats=[]; yaw=0;pitch=0;posY=0;dist=0;scl=1; grab=null;
   rebuildScreen(); applyKey();
