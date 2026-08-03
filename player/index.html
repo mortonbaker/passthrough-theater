@@ -89,9 +89,13 @@ async function loadLib(){
     $('grid').appendChild(c);
   }
 }
+let libSort = localStorage.getItem('libSort') || 'title';
 function libApply(){
   const q = libQuery.trim().toLowerCase();
   libFiltered = q ? library.filter(v => v.title.toLowerCase().includes(q)) : library.slice();
+  if (libSort === 'title') libFiltered.sort((a,b)=>a.title.localeCompare(b.title));
+  else if (libSort === 'long') libFiltered.sort((a,b)=>(b.videoLength||0)-(a.videoLength||0));
+  else if (libSort === 'short') libFiltered.sort((a,b)=>(a.videoLength||0)-(b.videoLength||0));
   libPage = 0;
 }
 function thumbOf(id){
@@ -289,7 +293,8 @@ function drawBar(p){
   slider(c, BAR[4], chatVol,  {hover:hov('cvol'), label:'💬 chat',  value:Math.round(chatVol*100)+'%'});
   btn(c, BAR[5], '☰', {hover:hov('lib')});
   btn(c, BAR[6], listening ? '● LIVE' : '🎤', {on:listening, hover:hov('mic'), font: listening?'26px':'30px'});
-  btn(c, BAR[7], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
+  // progressive disclosure: the advanced panel only exists once ADV is on
+  if (advMode) btn(c, BAR[7], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
   btn(c, BAR[8], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
   if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
   if (voiceStatus){ c.fillStyle = listening ? C.rec : C.ok; c.font='26px system-ui';
@@ -312,6 +317,9 @@ const LIBW = [];
   LIBW.push({id:'k_back',  type:'btn', x:252, y:256, w:150, h:60});
   LIBW.push({id:'k_clear', type:'btn', x:414, y:256, w:150, h:60});
   LIBW.push({id:'close',   type:'btn', x:1400, y:36, w:150, h:64});
+  LIBW.push({id:'s_title', type:'btn', sort:'title', x:1000, y:256, w:150, h:60});
+  LIBW.push({id:'s_long',  type:'btn', sort:'long',  x:1162, y:256, w:180, h:60});
+  LIBW.push({id:'s_short', type:'btn', sort:'short', x:1354, y:256, w:196, h:60});
   const gx=60, gy=350, cw=368, chh=250, gap=14;
   for (let r=0;r<LIB_ROWS;r++) for (let col=0;col<LIB_COLS;col++){
     LIBW.push({id:`cell_${r*LIB_COLS+col}`, type:'btn', cell:r*LIB_COLS+col,
@@ -335,7 +343,10 @@ function drawBrowse(p){
     if (w.key) btn(c, w, w.key===' '?'space':w.key, {hover:hov(w.id), font:'28px', radius:10});
     else if (w.id==='k_back')  btn(c, w, 'del',   {hover:hov(w.id), font:'26px', radius:10});
     else if (w.id==='k_clear') btn(c, w, 'clear', {hover:hov(w.id), font:'26px', radius:10});
+    else if (w.sort) btn(c, w, {title:'A–Z', long:'longest', short:'shortest'}[w.sort],
+      {on:libSort===w.sort, hover:hov(w.id), font:'24px', radius:10});
   }
+  c.fillStyle=C.dim; c.font='24px system-ui'; c.fillText('sort', 946, 296);
   const start = libPage*LIB_PER;
   for (let i=0;i<LIB_PER;i++){
     const w = LIBW.find(x=>x.id==='cell_'+i), item = libFiltered[start+i];
@@ -583,6 +594,7 @@ function hitUI(ctrl){
 function widgetClick(p, w){
   needDraw = true;
   if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
+  if (w.sort){ libSort = w.sort; localStorage.setItem('libSort', libSort); libApply(); return; }
   if (w.cell !== undefined){
     const item = libFiltered[libPage*LIB_PER + w.cell];
     if (item) playVideo(item.id);            // straight to playback, no detail page
@@ -594,8 +606,11 @@ function widgetClick(p, w){
     case 'close': screenMode='bar'; syncScreens(); break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  toggleListen(); break;
-    case 'gear': panels.adv.holder.visible = !panels.adv.holder.visible; break;
-    case 'adv':  advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0'); break;
+    case 'gear': if (advMode) panels.adv.holder.visible = !panels.adv.holder.visible; break;
+    case 'adv':
+      advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0');
+      if (!advMode) panels.adv.holder.visible = false;   // leaving ADV closes it
+      break;
     case 'k_back': libQuery = libQuery.slice(0,-1); libApply(); break;
     case 'k_clear': libQuery=''; libApply(); break;
     case 'pg_prev': libPage = Math.max(0, libPage-1); break;
