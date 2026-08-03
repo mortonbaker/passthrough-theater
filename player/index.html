@@ -41,7 +41,7 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
     empty panel space to carry the menu anywhere<br>
     <b>Left stick</b> rotate (yaw / pitch) &middot; <b>Right stick</b> zoom / seek &middot;
     <b>Right grip</b> grab the scene with your hand<br>
-    <b>&#128682;</b> exit video &nbsp; <b>&#10005;</b> hide menu &nbsp; <b>&#9776;</b> library &nbsp;
+    <b>door icon</b> exit video &nbsp; <b>&#10005;</b> hide menu &nbsp; <b>&#9776;</b> library &nbsp;
     <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
   </div>
 </div>
@@ -323,6 +323,84 @@ function panelBG(c, w, h){
   c.strokeStyle = C.line; c.lineWidth = 2; c.stroke();
 }
 
+/* Flat monochrome icons, Material-style: one 5px stroke weight, geometric,
+   centred on the target. Text glyphs and emoji render with different weights
+   and colours per font, which is what made the bar look incoherent. */
+function head(c,x,y,dx,dy,k){
+  const nx=-dy, ny=dx;
+  c.beginPath(); c.moveTo(x+dx*k, y+dy*k);
+  c.lineTo(x-dx*k*0.6+nx*k*0.8, y-dy*k*0.6+ny*k*0.8);
+  c.lineTo(x-dx*k*0.6-nx*k*0.8, y-dy*k*0.6-ny*k*0.8);
+  c.closePath(); c.fill();
+}
+function arc10(c,s,dir){
+  // near-full circle with a gap at the top; the head sits at the travelling
+  // end of the arc, pointing across the gap in the direction of rotation
+  const r=s*0.8, g=0.38, a1=-Math.PI/2+g, a2=-Math.PI/2-g;
+  c.beginPath();
+  if (dir>0) c.arc(0,0,r, a1, a2, false); else c.arc(0,0,r, a2, a1, true);
+  c.stroke();
+  const th = dir>0 ? a2 : a1;
+  head(c, r*Math.cos(th), r*Math.sin(th),
+       dir>0 ? -Math.sin(th) : Math.sin(th),
+       dir>0 ?  Math.cos(th) : -Math.cos(th), s*0.26);
+  c.font='bold '+Math.round(s*0.9)+'px system-ui';
+  c.textAlign='center'; c.textBaseline='middle';
+  c.fillText('10', 0, 2);
+  c.textAlign='left'; c.textBaseline='alphabetic';
+}
+const IC = {
+  play(c,s){ c.beginPath(); c.moveTo(-s*0.55,-s); c.lineTo(s*0.95,0); c.lineTo(-s*0.55,s); c.closePath(); c.fill(); },
+  pause(c,s){ c.fillRect(-s*0.75,-s,s*0.5,2*s); c.fillRect(s*0.25,-s,s*0.5,2*s); },
+  prev(c,s){ c.fillRect(-s,-s,s*0.28,2*s); c.beginPath(); c.moveTo(s,-s); c.lineTo(-s*0.4,0); c.lineTo(s,s); c.closePath(); c.fill(); },
+  next(c,s){ c.fillRect(s*0.72,-s,s*0.28,2*s); c.beginPath(); c.moveTo(-s,-s); c.lineTo(s*0.4,0); c.lineTo(-s,s); c.closePath(); c.fill(); },
+  menu(c,s){ c.beginPath(); for (const y of [-0.7,0,0.7]){ c.moveTo(-s,y*s); c.lineTo(s,y*s); } c.stroke(); },
+  close(c,s){ c.beginPath(); c.moveTo(-s*0.8,-s*0.8); c.lineTo(s*0.8,s*0.8);
+    c.moveTo(s*0.8,-s*0.8); c.lineTo(-s*0.8,s*0.8); c.stroke(); },
+  exit(c,s){  // material "logout": door frame open to the right, arrow leaving
+    c.beginPath(); c.moveTo(s*0.25,-s); c.lineTo(-s,-s); c.lineTo(-s,s); c.lineTo(s*0.25,s); c.stroke();
+    c.beginPath(); c.moveTo(-s*0.2,0); c.lineTo(s*0.85,0); c.stroke();
+    head(c, s*1.0, 0, 1, 0, s*0.3); },
+  gear(c,s){
+    c.beginPath();
+    for (let i=0;i<8;i++){ const a=i*Math.PI/4;
+      c.moveTo(Math.cos(a)*s*0.62, Math.sin(a)*s*0.62);
+      c.lineTo(Math.cos(a)*s,      Math.sin(a)*s); }
+    c.stroke();
+    c.beginPath(); c.arc(0,0,s*0.62,0,7); c.stroke();
+    c.beginPath(); c.arc(0,0,s*0.24,0,7); c.stroke(); },
+  target(c,s){  // recenter: corner brackets + centre dot
+    const k=s*0.45, e=s;
+    c.beginPath();
+    c.moveTo(-e,-e+k); c.lineTo(-e,-e); c.lineTo(-e+k,-e);
+    c.moveTo(e-k,-e);  c.lineTo(e,-e);  c.lineTo(e,-e+k);
+    c.moveTo(e,e-k);   c.lineTo(e,e);   c.lineTo(e-k,e);
+    c.moveTo(-e+k,e);  c.lineTo(-e,e);  c.lineTo(-e,e-k);
+    c.stroke();
+    c.beginPath(); c.arc(0,0,s*0.16,0,7); c.fill(); },
+  mic(c,s){
+    const r=s*0.34;
+    rr(c,-r,-s,2*r,s*1.05,r); c.fill();
+    c.beginPath(); c.arc(0,-s*0.05,s*0.62, 0, Math.PI); c.stroke();
+    c.beginPath(); c.moveTo(0,s*0.57); c.lineTo(0,s*0.9); c.stroke();
+    c.beginPath(); c.moveTo(-s*0.4,s*0.9); c.lineTo(s*0.4,s*0.9); c.stroke(); },
+  r10(c,s){ arc10(c,s,-1); },
+  f10(c,s){ arc10(c,s, 1); },
+};
+function icon(c, w, name, opt={}){
+  const on = opt.on, hov = opt.hover;
+  c.fillStyle = on ? (opt.onColor || C.accent2) : (hov ? C.hover : '#26262c');
+  rr(c, w.x, w.y, w.w, w.h, opt.radius ?? 14); c.fill();
+  if (hov && !on){ c.strokeStyle = C.accent; c.lineWidth = 3; c.stroke(); }
+  const s = opt.size ?? Math.min(w.w, w.h)*0.30;
+  c.save(); c.translate(w.x+w.w/2, w.y+w.h/2);
+  const ink = opt.muted ? C.dim : C.txt;
+  c.strokeStyle = ink; c.fillStyle = ink;
+  c.lineWidth = 5; c.lineCap = 'round'; c.lineJoin = 'round';
+  if (IC[name]) IC[name](c, s);
+  c.restore();
+}
+
 /* ============================ playback bar ============================ */
 const BAR_W = 1536;
 const BAR = [
@@ -360,19 +438,19 @@ function drawBar(p){
   const w = id => BAR.find(x => x.id === id);
 
   // row 1: library, title, clock, utilities, exit
-  btn(c, w('lib'),  '☰', {hover:hov('lib')});
+  icon(c, w('lib'), 'menu', {hover:hov('lib')});
   let title = (detail && detail.title) || '';
   if (title.length > 28) title = title.slice(0,27)+'…';
   c.fillStyle = C.txt; c.font = '32px system-ui';
   c.fillText(title, 180, 84);
   c.fillStyle = C.dim; c.font = '26px system-ui'; c.textAlign = 'right';
   c.fillText(clock(), 810, 84); c.textAlign = 'left';
-  btn(c, w('ctr'),  '⌖', {hover:hov('ctr')});
-  btn(c, w('mic'),  listening ? '● REC' : 'talk', {on:listening, hover:hov('mic'), font:'30px'});
-  if (advMode) btn(c, w('gear'), '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
+  icon(c, w('ctr'),  'target', {hover:hov('ctr')});
+  icon(c, w('mic'),  'mic', {on:listening, onColor:C.rec, hover:hov('mic')});
+  if (advMode) icon(c, w('gear'), 'gear', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
   btn(c, w('adv'), 'ADV', {on:advMode, hover:hov('adv'), font:'24px'});
-  btn(c, w('hide'), '✕', {hover:hov('hide')});
-  btn(c, w('exit'), '🚪', {hover:hov('exit'), font:'34px'});
+  icon(c, w('hide'), 'close', {hover:hov('hide')});
+  icon(c, w('exit'), 'exit', {hover:hov('exit')});
 
   // row 2: time, scrubber, duration
   const t = video ? video.currentTime : 0,
@@ -383,28 +461,46 @@ function drawBar(p){
   slider(c, w('seek'), w('seek').get(), {hover:hov('seek')});
 
   // row 3: transport, speed, audio
-  btn(c, w('prev'), '|◀', {hover:hov('prev'), font:'28px'});
-  btn(c, w('skb'),  '−10', {hover:hov('skb'), font:'28px'});
-  btn(c, w('play'), video && !video.paused ? '❚❚' : '▶', {hover:hov('play')});
-  btn(c, w('skf'),  '+10', {hover:hov('skf'), font:'28px'});
-  btn(c, w('next'), '▶|', {hover:hov('next'), font:'28px'});
+  icon(c, w('prev'), 'prev', {hover:hov('prev')});
+  icon(c, w('skb'),  'r10',  {hover:hov('skb')});
+  icon(c, w('play'), video && !video.paused ? 'pause' : 'play', {hover:hov('play'), size:34});
+  icon(c, w('skf'),  'f10',  {hover:hov('skf')});
+  icon(c, w('next'), 'next', {hover:hov('next')});
   btn(c, w('spd'),  String(playRate)+'×', {on:playRate!==1, hover:hov('spd'), font:'28px'});
   slider(c, w('vvol'), videoVol, {hover:hov('vvol'), label:'video'});
   slider(c, w('cvol'), chatVol,  {hover:hov('cvol'), label:'chat'});
 
-  // status line
+  // conversation area — the lower half of the panel was an empty slab, and the
+  // voice exchange was squeezed into one 70-char status line, which is why a
+  // perfectly good reply could arrive and never visibly "render"
+  c.strokeStyle = C.line; c.lineWidth = 2;
+  c.beginPath(); c.moveTo(40,470); c.lineTo(W-40,470); c.stroke();
+  const wrap = (txt, max) => { const out=[]; let line='';
+    for (const word of String(txt).split(/\s+/)){
+      if ((line+' '+word).trim().length > max){ out.push(line.trim()); line=word; }
+      else line += ' '+word; }
+    if (line.trim()) out.push(line.trim()); return out; };
+  if (lastYou){
+    c.fillStyle = C.dim; c.font = '28px system-ui';
+    c.fillText('you', 60, 532);
+    c.fillText(wrap(lastYou, 88)[0] || '', 200, 532);
+  }
+  if (voiceReply){
+    c.fillStyle = C.accent; c.font = '28px system-ui';
+    c.fillText('Mariko', 60, 596);
+    c.fillStyle = C.txt;
+    wrap(voiceReply, 88).slice(0,4).forEach((ln,i) => c.fillText(ln, 200, 596+i*44));
+  }
+  // transient status at the bottom of the conversation area
   if (centerAt){
     const left = Math.max(0, Math.ceil((centerAt - performance.now())/1000));
     c.fillStyle = C.accent; c.font='30px system-ui';
-    c.fillText('look where you want it, recentering in ' + left + '…', 60, 428);
+    c.fillText('look where you want it, recentering in ' + left + '…', 60, 820);
   } else if (performance.now() < noteUntil){
-    c.fillStyle = C.ok; c.font='28px system-ui'; c.fillText(saveNote, 60, 428);
+    c.fillStyle = C.ok; c.font='28px system-ui'; c.fillText(saveNote, 60, 820);
   } else if (voiceStatus){
     c.fillStyle = listening ? C.rec : C.ok; c.font='28px system-ui';
-    c.fillText(voiceStatus.slice(0,70), 60, 428);
-  } else if (voiceReply){
-    c.fillStyle = C.dim; c.font='28px system-ui';
-    c.fillText(('Mariko: ' + voiceReply).slice(0,70), 60, 428);
+    c.fillText(voiceStatus.slice(0,80), 60, 820);
   }
   p.tex.needsUpdate = true;
 }
@@ -441,7 +537,7 @@ function drawBrowse(p){
   c.fillText(libQuery ? '“'+libQuery+'”' : 'type to search', 260, 74);
   c.fillStyle = C.dim; c.font = '28px system-ui';
   c.fillText(`${libFiltered.length} of ${library.length}`, 1120, 74);
-  btn(c, LIBW.find(w=>w.id==='close'), 'close', {hover:hov('close')});
+  icon(c, LIBW.find(w=>w.id==='close'), 'close', {hover:hov('close')});
   for (const w of LIBW){
     if (w.key) btn(c, w, w.key===' '?'space':w.key, {hover:hov(w.id), font:'28px', radius:10});
     else if (w.id==='k_back')  btn(c, w, 'del',   {hover:hov(w.id), font:'26px', radius:10});
@@ -545,8 +641,8 @@ const replyAudio = new Audio();
 let micStream=null, micRec=null, micChunks=[], voiceBusy=false, micOn=false;
 let listening=false, vadCtx=null, vadAnalyser=null, vadData=null;
 let vadSpeaking=false, vadQuiet=0, vadArmed=false;
-let voiceStatus='', voiceReply='';
-let playQueue=[], playing=false;
+let voiceStatus='', voiceReply='', lastYou='';
+let playQueue=[], playing=false, pendingRetry=false;
 
 const VAD = {on:0.030, off:0.018, hangMs:850, minMs:350};
 let speechStart=0;
@@ -562,7 +658,13 @@ function playNext(){
   replyAudio.volume = chatVol;
   replyAudio.src = 'data:audio/wav;base64,' + it.b64;
   replyAudio.onended = playNext; replyAudio.onerror = playNext;
-  replyAudio.play().catch(()=>{ voiceStatus='tap 🎤 to allow audio'; playing=false; duck(false); needDraw=true; });
+  replyAudio.play().catch(e => {
+    // autoplay refusal: keep the chunk and retry on the next trigger pull,
+    // which counts as the user gesture the browser wants
+    report('replyAudio.play', e);
+    playQueue.unshift(it); playing=false; duck(false); pendingRetry=true;
+    voiceStatus='audio blocked — pull a trigger to play'; needDraw=true;
+  });
 }
 async function ensureMic(){
   if (micStream) return micStream;
@@ -649,12 +751,17 @@ async function sendVoice(){
   if (blob.size < 2500){ vadArmed = listening; voiceStatus = listening?'listening…':''; needDraw=true; return; }
   voiceBusy=true; voiceStatus='thinking…'; needDraw=true;
   playQueue=[]; playing=false;
+  beacon('VOICE sent ' + blob.size + 'b ' + (blob.type||''));
   try {
     // a video can bind its own voice via the "voice" sidecar key
     const vq = (detail && detail.voice) ? '&voice='+encodeURIComponent(detail.voice) : '';
     const r = await fetch('/voice/talk?sid='+SID+vq, {method:'POST', body:blob,
       headers:{'Content-Type': blob.type||'audio/webm'}});
     const j = await r.json();
+    beacon('VOICE reply audio=' + (j.audio ? j.audio.length : 0)
+      + ' you=' + JSON.stringify((j.you||'').slice(0,60))
+      + (j.error ? ' ERR ' + j.error : '') + (j.note ? ' note ' + j.note : ''));
+    if (j.you) lastYou = j.you;
     if (!j.audio){ voiceStatus = j.error ? ('error: '+j.error) : (j.note||'nothing heard'); }
     else {
       voiceStatus='';
@@ -878,6 +985,7 @@ function anchorUI(){
 /* ============================ input ============================ */
 let triggerDown={}, drag=null, aiming=null, menuGrab=null;
 function onSelectStart(hand, ctrl){
+  if (pendingRetry){ pendingRetry=false; playNext(); }
   const hit = hitUI(ctrl);
   // remember whether the menu was up when the press began: releasing the very
   // press that hid it must not immediately bring it back
@@ -1276,6 +1384,7 @@ function cleanup(){
   session=null; video=null; mats=[]; group=null; screenRoot=null; uiRoot=null; scene=null;
   panels={}; lasers={}; ctrls={}; drag=null; aiming=null; triggerDown={}; menuGrab=null;
   micStream=null; vadCtx=null; listening=false; micOn=false; playing=false; playQueue=[];
+  pendingRetry=false;
   prevBtn.left={}; prevBtn.right={};
   starting=false; pending=null; selectedId=null; videoTex=null;
   menuOn=true; screenMode='bar'; centered=false; centerAt=0; frameCount=0;

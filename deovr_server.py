@@ -374,16 +374,22 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = r.headers.get("Content-Type", "application/json")
         except Exception as exc:
             body = json.dumps({"error": str(exc)}).encode()
-            self.send_response(502)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            try:
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            except OSError:
+                return  # client hung up while the bridge was thinking
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            return self.wfile.write(body)
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+            self.wfile.write(data)
+        except OSError:
+            pass  # ditto: a reply nobody is waiting for is not an error
 
     def do_POST(self):
         """POST /sidecar/<id> with a JSON body: merge into the video's sidecar file.
