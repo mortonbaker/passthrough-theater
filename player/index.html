@@ -220,7 +220,7 @@ function applyKey(){
 function applyTransform(){
   if (!group) return;
   group.rotation.order='YXZ';
-  group.rotation.y=yaw; group.rotation.x=pitch;
+  group.rotation.y=yaw+baseYaw; group.rotation.x=pitch;
   group.position.y=posY; group.position.z=dist;
   group.scale.setScalar(scl);
 }
@@ -309,6 +309,7 @@ const BAR = [
   {id:'cvol',  type:'slider', x:700, y:236, w:330, h:64,
      get:()=>chatVol, set:v=>{ chatVol=v; replyAudio.volume=v;
        localStorage.setItem('chatVol', v); }},
+  {id:'ctr',   type:'btn', x:1036, y:230, w:58,  h:80},
   {id:'lib',   type:'btn', x:1100, y:230, w:110, h:80},
   {id:'mic',   type:'btn', x:1224, y:230, w:130, h:80},
   {id:'gear',  type:'btn', x:1368, y:230, w:66,  h:80},
@@ -332,11 +333,12 @@ function drawBar(p){
   slider(c, BAR[2], BAR[2].get(), {hover:hov('seek')});
   slider(c, BAR[3], videoVol, {hover:hov('vvol'), label:'🔊 video', value:Math.round(videoVol*100)+'%'});
   slider(c, BAR[4], chatVol,  {hover:hov('cvol'), label:'💬 chat',  value:Math.round(chatVol*100)+'%'});
-  btn(c, BAR[5], '☰', {hover:hov('lib')});
-  btn(c, BAR[6], listening ? '● LIVE' : '🎤', {on:listening, hover:hov('mic'), font: listening?'26px':'30px'});
+  btn(c, BAR[5], '⌖', {hover:hov('ctr')});
+  btn(c, BAR[6], '☰', {hover:hov('lib')});
+  btn(c, BAR[7], listening ? '● LIVE' : '🎤', {on:listening, hover:hov('mic'), font: listening?'26px':'30px'});
   // progressive disclosure: the advanced panel only exists once ADV is on
-  if (advMode) btn(c, BAR[7], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
-  btn(c, BAR[8], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
+  if (advMode) btn(c, BAR[8], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
+  btn(c, BAR[9], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
   if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
   if (voiceStatus){ c.fillStyle = listening ? C.rec : C.ok; c.font='26px system-ui';
     let s = voiceStatus; if (s.length>70) s = s.slice(0,69)+'…';
@@ -647,6 +649,7 @@ function widgetClick(p, w){
     case 'play': video && (video.paused? video.play() : video.pause()); break;
     case 'back': screenMode='browse'; syncScreens(); break;
     case 'close': screenMode='bar'; syncScreens(); break;
+    case 'ctr':  recenter(lastFrame); break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  toggleListen(); break;
     case 'gear': if (advMode) panels.adv.holder.visible = !panels.adv.holder.visible; break;
@@ -862,7 +865,8 @@ function pollGamepads(dt, frame){
           video.currentTime = clamp(video.currentTime+(sx>0?10:-10),0,video.duration);
           seekCool = performance.now()+400; needDraw=true;
         }
-        if (edge(5)){ yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform(); needDraw=true; }
+        if (edge(5)){ yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform();
+                      recenter(lastFrame); needDraw=true; }
       }
       if (edge(4)) toggleListen();
     }
@@ -876,6 +880,33 @@ function pollGamepads(dt, frame){
 // So: prepare here, then let the Enter VR click own the session request.
 let starting = false, pending = null, selectedId = null;
 let frameCount = 0, hbTimer = null, cam = null, glCanvas = null;
+// Reference-space forward is the runtime's, not your gaze, so content must be
+// aligned to the real head heading rather than assumed to face -Z.
+let baseYaw = 0, centered = false, lastFrame = null;
+function headPose(frame){
+  if (!frame || !renderer) return null;
+  try { return frame.getViewerPose(renderer.xr.getReferenceSpace()); }
+  catch(e){ return null; }
+}
+function poseYaw(pose){
+  const o = pose.transform.orientation;
+  const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+  const f = new THREE.Vector3(0,0,-1).applyQuaternion(q);
+  return Math.atan2(-f.x, -f.z);
+}
+function recenter(frame){
+  const pose = headPose(frame);
+  if (!pose) return false;
+  baseYaw = poseYaw(pose);
+  applyTransform();
+  if (uiRoot){
+    const p = pose.transform.position;
+    uiRoot.position.set(p.x, p.y, p.z);
+    uiRoot.rotation.y = baseYaw;
+  }
+  needDraw = true;
+  return true;
+}
 
 // The renderer is built once at page load, never inside an entry attempt.
 // Creating a GL context while a session is granted but not yet attached
@@ -1039,10 +1070,15 @@ async function start(id, pre){
   // scene rendering, or the session looks completely dead.
   const guard = (tag, fn) => { try { fn(); } catch(e){ report(tag, e); } };
   renderer.setAnimationLoop((t, frame) => {
-    frameCount++;
+    frameCount++; lastFrame = frame;
     const now=performance.now(), dt=Math.min(0.1,(now-last)/1000); last=now;
     try { xrCam = renderer.xr.getCamera(); } catch(e){ report('getCamera', e); }
-    if (!anchored){ guard('anchorUI', anchorUI); anchored = true; }
+    // Align to the real head heading once a viewer pose exists. On frame 1 the
+    // XR camera matrix is still identity, which is what put everything 90 deg
+    // off to one side.
+    if (!centered) guard('recenter', () => {
+      if (recenter(frame)){ centered = true; beacon('CENTERED yaw=' + (baseYaw*57.3).toFixed(0)); }
+    });
     guard('pollGamepads', () => pollGamepads(dt, frame));
     guard('pollVAD', pollVAD);
     guard('updatePointers', updatePointers);
