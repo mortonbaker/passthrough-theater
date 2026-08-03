@@ -78,9 +78,27 @@ Enter on the flat page, then everything is laser + trigger:
 | **A** / **B** | play-pause / exit (always active) |
 | Left stick click | show / hide menu (no-laser fallback) |
 
-The **⚙ popup** holds everything: key colour presets, key strength and
+The **☰ scene picker** browses the whole library without leaving passthrough:
+an on-screen keyboard filters by title, results are paged, and selecting one
+swaps the video in place — the mesh is only rebuilt when the projection
+actually changes.
+
+The **⚙ popup** holds everything else: key colour presets, key strength and
 softness, and sliders for yaw, pitch, height, zoom, and distance — so the whole
 player is usable with no gestures at all.
+
+## Optional voice assistant
+
+Set `VOICE_BRIDGE` to the base URL of a service exposing `POST /talk`
+(audio in, `{you, reply, audio}` out) and the player gains a 🎤 button plus
+push-to-talk on the left trigger. The server proxies `/voice/*` to it, which
+keeps the page same-origin — a browser on an https page cannot call a plain-http
+backend directly.
+
+A reference bridge chaining Whisper → an OpenAI-compatible LLM → an
+OpenAI-compatible TTS endpoint is about 200 lines of standard library; the
+player only needs the JSON contract above, so any backend that speaks it works.
+Leave `VOICE_BRIDGE` empty to disable the feature entirely.
 
 **ADV mode** (toggle on the menu bar, remembered across sessions) adds a
 gesture layer:

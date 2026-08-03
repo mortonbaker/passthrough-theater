@@ -16,6 +16,7 @@ import ssl
 import subprocess
 import threading
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = "/srv/deovr"
@@ -29,6 +30,9 @@ PORT = 8250
 HTTPS_PORT = 8253
 CERT_FILE = os.path.join(BASE, "certs", "cert.pem")
 KEY_FILE = os.path.join(BASE, "certs", "key.pem")
+# Optional voice assistant. The player is served over https, so it cannot call a
+# plain-http box directly (mixed content); we proxy instead. Unset to disable.
+VOICE_BRIDGE = os.environ.get("VOICE_BRIDGE", "http://192.168.0.168:8781")
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".m4v", ".mov"}
 
@@ -331,6 +335,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def voice_proxy(self, path):
+        """Forward voice traffic to the assistant box so the page stays same-origin."""
+        if not VOICE_BRIDGE:
+            return self.send_error(503, "voice bridge not configured")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > (25 << 20):
+                return self.send_error(413, "too large")
+            body = self.rfile.read(length) if length else b""
+            target = VOICE_BRIDGE.rstrip("/") + path[len("/voice"):]
+            req = urllib.request.Request(
+                target, data=body, method="POST",
+                headers={"Content-Type": self.headers.get("Content-Type") or
+                         "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                data = r.read()
+                ctype = r.headers.get("Content-Type", "application/json")
+        except Exception as exc:
+            body = json.dumps({"error": str(exc)}).encode()
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self):
         """POST /sidecar/<id> with a JSON body: merge into the video's sidecar file.
 
@@ -338,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
         to the video, so every future play reads the same settings.
         """
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/voice/"):
+            return self.voice_proxy(self.path)
         if not path.startswith("/sidecar/"):
             return self.send_error(404, "not found")
         vid = path[len("/sidecar/"):]
