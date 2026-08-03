@@ -73,7 +73,7 @@ const clock = () => new Date().toLocaleTimeString([], {hour:'numeric', minute:'2
 const UI = {
   barDist: 1.25, barWdeg: 44, barHdeg: 20, barPitch: -12,
   libDist: 1.7,  libWdeg: 56, libHdeg: 34, libPitch: -6,
-  advDist: 1.35, advWdeg: 40, advHdeg: 26, advPitch: -4,
+  advDist: 1.35, advWdeg: 40, advHdeg: 36, advPitch: -4,
   scale: parseFloat(localStorage.getItem('uiScale') || '1'),
 };
 const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
@@ -83,7 +83,11 @@ const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
 /* ============================ state ============================ */
 let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, xrCam=null;
 let mats=[], group=null, uiRoot=null, videoTex=null;
-let yaw=0, pitch=0, posY=0, dist=0, scl=1;
+let yaw=0, pitch=0, roll=0, posY=0, dist=0, scl=1;
+try { const f=JSON.parse(localStorage.getItem('framing')||'{}');
+  yaw=f.yaw??0; pitch=f.pitch??0; roll=f.roll??0; posY=f.posY??0;
+  dist=f.dist??0; scl=f.scl??1; } catch(e){}
+let framingSaved=0;
 let advMode = localStorage.getItem('advMode') === '1';
 let screenMode = 'bar';                       // 'bar' | 'browse'
 let menuOn = true;
@@ -174,10 +178,11 @@ function domeGeo(full){
 const FRAG = `
 precision highp float; varying vec2 vUv;
 uniform sampler2D map; uniform vec2 uvOff, uvScl, matteOff;
+uniform float uvZoom;
 uniform int useMatte, useKey; uniform vec3 keyColor;
 uniform float similarity, smoothness, spill;
 void main(){
-  vec2 cuv = vUv*uvScl + uvOff;
+  vec2 cuv = ((vUv - 0.5) / uvZoom + 0.5)*uvScl + uvOff;
   vec4 c = texture2D(map, cuv);
   float a = 1.0;
   if (useMatte==1) a = texture2D(map, cuv + matteOff).r;
@@ -197,6 +202,7 @@ function makeMat(tex){
     uniforms:{ map:{value:tex},
       uvOff:{value:new THREE.Vector2()}, uvScl:{value:new THREE.Vector2(1,1)},
       matteOff:{value:new THREE.Vector2()}, useMatte:{value:0}, useKey:{value:1},
+      uvZoom:{value:scl},
       keyColor:{value:new THREE.Color(keyState.color)},
       similarity:{value:keyState.similarity}, smoothness:{value:keyState.smoothness},
       spill:{value:0}},
@@ -220,9 +226,13 @@ function applyKey(){
 function applyTransform(){
   if (!group) return;
   group.rotation.order='YXZ';
-  group.rotation.y=yaw+baseYaw; group.rotation.x=pitch;
+  group.rotation.y=yaw+baseYaw; group.rotation.x=pitch; group.rotation.z=roll;
   group.position.y=posY; group.position.z=dist;
-  group.scale.setScalar(scl);
+  group.scale.setScalar(1);            // a dome you sit inside cannot be zoomed by scale
+  for (const m of mats) m.uniforms.uvZoom.value = scl;
+  const now=performance.now();
+  if (now-framingSaved > 600){ framingSaved=now;
+    try { localStorage.setItem('framing', JSON.stringify({yaw,pitch,roll,posY,dist,scl})); } catch(e){} }
 }
 
 /* ============================ curved UI panels ============================ */
@@ -343,7 +353,12 @@ function drawBar(p){
   // progressive disclosure: the advanced panel only exists once ADV is on
   if (advMode) btn(c, BAR[8], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
   btn(c, BAR[9], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
-  if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
+  if (centerAt){
+    const left = Math.max(0, Math.ceil((centerAt - performance.now())/1000));
+    c.fillStyle = C.accent; c.font='30px system-ui';
+    c.fillText('look where you want it, recentering in ' + left + '…', 60, 330);
+  }
+  else if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
   if (voiceStatus){ c.fillStyle = listening ? C.rec : C.ok; c.font='26px system-ui';
     let s = voiceStatus; if (s.length>70) s = s.slice(0,69)+'…';
     c.fillText(s, 60, 330); }
@@ -432,6 +447,7 @@ const ADV_ROWS = [
   {id:'smo',  label:'softness',     min:0, max:0.25, get:()=>keyState.smoothness, set:v=>{keyState.smoothness=v; applyKey();}, f:v=>v.toFixed(2)},
   {id:'yaw',  label:'yaw',    min:-180,max:180, get:()=>deg(yaw),   set:v=>{yaw=rad(v); applyTransform();},  f:v=>v.toFixed(0)+'°'},
   {id:'pit',  label:'pitch',  min:-75, max:75,  get:()=>deg(pitch), set:v=>{pitch=rad(v); applyTransform();},f:v=>v.toFixed(0)+'°'},
+  {id:'rol',  label:'roll',   min:-45, max:45,  get:()=>deg(roll),  set:v=>{roll=rad(v); applyTransform();}, f:v=>v.toFixed(0)+'°'},
   {id:'hgt',  label:'height', min:-1.5,max:1.5, get:()=>posY, set:v=>{posY=v; applyTransform();}, f:v=>v.toFixed(2)},
   {id:'zoom', label:'zoom',   min:0.3, max:3,   get:()=>scl,  set:v=>{scl=v;  applyTransform();}, f:v=>v.toFixed(2)},
   {id:'dst',  label:'distance',min:-3,max:3,    get:()=>dist, set:v=>{dist=v; applyTransform();}, f:v=>v.toFixed(2)},
@@ -653,7 +669,7 @@ function widgetClick(p, w){
     case 'play': video && (video.paused? video.play() : video.pause()); break;
     case 'back': screenMode='browse'; syncScreens(); break;
     case 'close': screenMode='bar'; syncScreens(); break;
-    case 'ctr':  recenter(lastFrame); break;
+    case 'ctr':  centerAt = performance.now() + 3000; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  toggleListen(); break;
     case 'gear': if (advMode) panels.adv.holder.visible = !panels.adv.holder.visible; break;
@@ -667,7 +683,7 @@ function widgetClick(p, w){
     case 'pg_next': libPage = Math.min(Math.max(0,Math.ceil(libFiltered.length/LIB_PER)-1), libPage+1); break;
     case 'keyblack': keyState.color='#000000'; applyKey(); break;
     case 'keygreen': keyState.color='#00ff00'; applyKey(); break;
-    case 'reset': yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform(); break;
+    case 'reset': yaw=0;pitch=0;roll=0;posY=0;dist=0;scl=1; applyTransform(); break;
     case 'save': saveSidecar(); break;
   }
 }
@@ -844,7 +860,7 @@ function pollGamepads(dt, frame){
       if (edge(4)){ video && (video.paused?video.play():video.pause()); needDraw=true; }
       if (edge(5)) session.end();
       if (edge(3)){ menuOn=!menuOn; if(menuOn) anchorUI(); needDraw=true; }
-      if (advMode){
+      {
         if (grip && src.gripSpace && frame){
           const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
           if (pose){
@@ -886,7 +902,7 @@ let starting = false, pending = null, selectedId = null;
 let frameCount = 0, hbTimer = null, cam = null, glCanvas = null;
 // Reference-space forward is the runtime's, not your gaze, so content must be
 // aligned to the real head heading rather than assumed to face -Z.
-let baseYaw = 0, centered = false, lastFrame = null;
+let baseYaw = 0, centered = false, lastFrame = null, centerAt = 0;
 function headPose(frame){
   if (!frame || !renderer) return null;
   try { return frame.getViewerPose(renderer.xr.getReferenceSpace()); }
@@ -1080,6 +1096,10 @@ async function start(id, pre){
     // Align to the real head heading once a viewer pose exists. On frame 1 the
     // XR camera matrix is still identity, which is what put everything 90 deg
     // off to one side.
+    if (centerAt){
+      if (now >= centerAt){ centerAt = 0; guard('recenter', () => recenter(frame)); }
+      needDraw = true;
+    }
     if (!centered) guard('recenter', () => {
       if (recenter(frame)){ centered = true; beacon('CENTERED yaw=' + (baseYaw*57.3).toFixed(0)); }
     });
@@ -1105,7 +1125,7 @@ async function start(id, pre){
 function cleanup(){
   try{ hbTimer && clearInterval(hbTimer); }catch(e){} hbTimer=null;
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
-  try{ session && session.end(); }catch(e){}
+  try{ const p = session && session.end(); if (p && p.catch) p.catch(()=>{}); }catch(e){}
   // keep the renderer and its GL context alive for the next session
   // release the media element, or its audio keeps playing after exit
   try{ video && video.pause(); video && (video.src=''); video && video.load(); }catch(e){}
