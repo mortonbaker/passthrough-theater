@@ -219,6 +219,7 @@ let library=[], libFiltered=[], libPage=0, libQuery='';
 const LIB_ROWS = 6;
 // voice assistant state
 let micOn=false, micRec=null, micChunks=[], micStream=null, voiceBusy=false;
+const replyAudio = new Audio();   // primed on entry so replies can autoplay
 let voiceYou='', voiceReply='', voiceStatus='';
 const SID = 'vr-' + Math.floor(Math.random()*1e9);
 let lasers={};             // hand -> {line, dot}
@@ -449,8 +450,10 @@ async function sendVoice(){
     else {
       voiceYou = j.you || ''; voiceReply = j.reply || ''; voiceStatus = '';
       if (j.audio){
-        const a = new Audio('data:audio/wav;base64,' + j.audio);
-        a.play().catch(()=>{});
+        // Reuse one element primed by a user gesture, so autoplay policy does
+        // not silently swallow the reply after the await.
+        replyAudio.src = 'data:audio/wav;base64,' + j.audio;
+        replyAudio.play().catch(err => { voiceStatus = 'tap 🎤 to allow audio'; needDraw = true; });
       }
       if (!voiceReply) voiceStatus = j.note || 'nothing heard';
     }
@@ -683,6 +686,12 @@ $('enter').onclick = async () => {
 
 async function start(){
   if (!navigator.xr) throw new Error('WebXR unavailable (needs the https URL)');
+  // Ask for the mic BEFORE entering XR: the permission prompt is 2D browser UI
+  // and cannot be shown or tapped from inside an immersive session.
+  if (!micStream && navigator.mediaDevices){
+    try { micStream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+    catch(e){ voiceStatus = 'mic not allowed — voice disabled'; }
+  }
   const url = detail.encodings[0].videoSources[0].url;
   video = document.createElement('video');
   video.src = url; video.loop = true; video.playsInline = true;
@@ -743,6 +752,10 @@ async function start(){
     c.addEventListener('selectend',   () => c.userData.hand && onSelectEnd(c.userData.hand, c));
     scene.add(c);
   }
+
+  // prime the audio element while we still have the Enter click's gesture
+  try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
+        replyAudio.pause(); replyAudio.muted = false; } catch(e){}
 
   session = await navigator.xr.requestSession('immersive-ar');
   session.addEventListener('end', cleanup);
