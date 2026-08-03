@@ -1,0 +1,16 @@
+# User service for the theater voice bridge on spark.
+# Install:  cp theater-voice.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload && systemctl --user enable --now theater-voice
+#           loginctl enable-linger   # so it survives logout
+[Unit]
+Description=Theater voice bridge (whisper -> ollama -> chatterbox)
+After=network-online.target
+
+[Service]
+ExecStart=%h/xtts-venv/bin/python %h/theater-voice/server.py
+WorkingDirectory=%h/theater-voice
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

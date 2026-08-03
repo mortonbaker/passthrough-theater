@@ -164,13 +164,32 @@ Bar rows: transport + clock / scrubber / audio then modes.
 
 ## Voice
 
-Whisper → LM Studio → Chatterbox, all on studio-pc.
+**Now on spark (100.70.209.20), not studio-pc.** Whisper → Ollama → Chatterbox.
+Moved 2026-08-03 after LM Studio on studio-pc hung with no remote way to
+restart it (RDP/WinRM/SSH all closed on both of studio-pc's interfaces — only
+the old bridge's :8781 answers). The old bridge also had no repo; this one is
+`voice/server.py` in this repo.
 
-- Persona is read **live from Open WebUI's SQLite** (`model` table, id
-  `stheno-uncensored`, name Mariko). Edit it in Open WebUI; the bridge re-reads
-  every 30s. Do not hardcode a prompt — doing that once neutered the character.
-- Default voice `serafina` (note the spelling). 40 reference clips in
-  `C:\Users\morto\Code\chatterbox-server\voices`.
+- Bridge: `spark:~/theater-voice/server.py`, port 8781, systemd **user** unit
+  `theater-voice` (`systemctl --user …` as morton on spark; linger enabled).
+  Deploy: `scp voice/server.py morton@100.70.209.20:theater-voice/` + restart.
+- Reuses spark's already-running whisper-server (:8178, large-v3-turbo) and
+  ollama (:11434). LLM: `hf.co/bartowski/L3-8B-Stheno-v3.2-GGUF:Q6_K` — same
+  Stheno the studio-pc LM Studio ran.
+- atlas01 points at it via a systemd drop-in:
+  `/etc/systemd/system/deovr.service.d/voice.conf` sets
+  `VOICE_BRIDGE=http://100.70.209.20:8781`.
+- **Persona** is `spark:~/theater-voice/persona.md`, re-read every request so
+  edits are live. Currently a PLACEHOLDER — the real Mariko text is the
+  `stheno-uncensored` model entry in Open WebUI on studio-pc; paste it in.
+  (Spark's own Open WebUI db is root-owned; a file is the editable spot.)
+- **Voices** are `spark:~/theater-voice/voices/<name>.wav` (Chatterbox
+  zero-shot). `serafina` is still only on studio-pc/DOC01
+  (`chatterbox-server\voices`); until `serafina.wav` is dropped in, the bridge
+  falls back to the first clip alphabetically (`elizabeth-skylar`).
+- Verified end-to-end 2026-08-03 through the atlas01 HTTPS proxy: espeak
+  question → correct transcript → in-character reply → audio + streamed
+  chunks. Stage directions (`*blushes*`) are stripped before TTS.
 - A `"voice"` key in a video's sidecar overrides it for that video. A leftover
   `aoi` binding once caused a "wrong voice" report — check sidecars first.
 - Replies stream sentence-by-sentence: `POST /talk` returns the first sentence
