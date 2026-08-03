@@ -3,7 +3,34 @@
 Written 2026-08-03. Everything below is verified unless marked otherwise.
 
 Repo: `mortonbaker/passthrough-theater` (public), local `C:\Code\deovr-lan`.
-Last commit `ec0efae`. Deployed build stamp `1785724290`.
+Also cloned on atlas01 at `~/Code/passthrough-theater` (2026-08-03 session
+deployed from there — atlas01 is the deploy target, so the deploy.sh steps were
+run locally: parse checks, copy, restart, verify). Deployed build stamp
+`1785761038` (this commit).
+
+2026-08-03 changes, all **unverified in the headset**:
+- `micOn` was never declared — every mic-button click threw a ReferenceError
+  (seen in the client log) and widgetClick is now wrapped so one broken widget
+  can't eat clicks silently.
+- ✕ on the bar now **exits the video** (DeoVR semantics). Hiding the menu is
+  click-away or right-stick-click, as before. B still exits; both paths beacon
+  `EXIT via bar` / `EXIT via B` so the log finally shows exit attempts.
+- Grip-grab yaw/pitch signs flipped: rotation now follows the hand like the
+  height mapping always did — the old opposing signs are what read as
+  "the axes are messed up". Axis assignments themselves were already canonical
+  (yaw=Y, pitch=X, roll=Z, YXZ order — per MDN WebXR docs).
+- DeoVR-style bar: title + clock row, scrubber with times at the ends,
+  prev/−10/play/+10/next, playback-speed cycle, volume sliders.
+- ADV panel: lens (180/360/F190/MKX200/MKX220) and stereo (SBS/TB/2D)
+  overrides; `save` now persists screen/stereo/is3d to the sidecar too.
+  The UI-size slider was drawn off the bottom edge of the canvas (876–940 on a
+  900px canvas) — panel is taller now and rows are tighter.
+- TB (over/under) stereo actually renders now; eyeUV previously only knew SBS.
+- cleanup() no longer disposes the renderer (the comment always said keep it);
+  disposing forced the next entry to create a GL context between session grant
+  and attach — the sequence that used to crash the tab. It also resets
+  `centered`, so re-entry recenters instead of reusing a stale baseYaw
+  (the second session in the client log never logged CENTERED).
 
 ---
 
