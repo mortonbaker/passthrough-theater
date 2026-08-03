@@ -302,6 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.index()
             if path == "/player" or path.startswith("/player/"):
                 return self.player_static(path)
+            if path.startswith("/voice/"):
+                return self.voice_proxy(self.path, "GET")
             if path.startswith("/video/"):
                 return self.detail(path[len("/video/"):])
             if path.startswith("/thumb/"):
@@ -335,18 +337,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def voice_proxy(self, path):
+    def voice_proxy(self, path, method="POST"):
         """Forward voice traffic to the assistant box so the page stays same-origin."""
         if not VOICE_BRIDGE:
             return self.send_error(503, "voice bridge not configured")
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > (25 << 20):
-                return self.send_error(413, "too large")
-            body = self.rfile.read(length) if length else b""
+            body = b""
+            if method == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > (25 << 20):
+                    return self.send_error(413, "too large")
+                body = self.rfile.read(length) if length else b""
             target = VOICE_BRIDGE.rstrip("/") + path[len("/voice"):]
             req = urllib.request.Request(
-                target, data=body, method="POST",
+                target, data=body if method == "POST" else None, method=method,
                 headers={"Content-Type": self.headers.get("Content-Type") or
                          "application/octet-stream"})
             with urllib.request.urlopen(req, timeout=300) as r:

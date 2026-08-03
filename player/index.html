@@ -437,25 +437,53 @@ function micStop(){
   micOn = false;
   try { micRec && micRec.state !== 'inactive' && micRec.stop(); } catch(e){}
 }
+// Sentences arrive one at a time. Queue them so playback starts on the first
+// while the rest are still being synthesised.
+let playQueue = [], playing = false;
+function enqueue(b64, text){
+  playQueue.push({b64, text});
+  if (!playing) playNext();
+}
+function playNext(){
+  const item = playQueue.shift();
+  if (!item){ playing = false; voiceStatus=''; needDraw=true; return; }
+  playing = true;
+  voiceReply = item.text; needDraw = true;
+  replyAudio.src = 'data:audio/wav;base64,' + item.b64;
+  replyAudio.onended = playNext;
+  replyAudio.onerror = playNext;
+  replyAudio.play().catch(() => { voiceStatus = 'tap 🎤 to allow audio'; playing=false; needDraw=true; });
+}
+
 async function sendVoice(){
   const blob = new Blob(micChunks, {type: (micRec && micRec.mimeType) || 'audio/webm'});
   micChunks = [];
   if (blob.size < 2000){ voiceStatus=''; needDraw=true; return; }
   voiceBusy = true; voiceStatus = 'thinking…'; needDraw = true;
+  playQueue = []; playing = false;
   try {
     const r = await fetch('/voice/talk?sid='+SID, {method:'POST', body: blob,
       headers:{'Content-Type': blob.type || 'audio/webm'}});
     const j = await r.json();
-    if (j.error){ voiceStatus = 'error: ' + j.error; }
+    if (j.error && !j.audio){ voiceStatus = 'error: ' + j.error; }
+    else if (!j.audio){ voiceStatus = j.note || 'nothing heard'; }
     else {
-      voiceYou = j.you || ''; voiceReply = j.reply || ''; voiceStatus = '';
-      if (j.audio){
-        // Reuse one element primed by a user gesture, so autoplay policy does
-        // not silently swallow the reply after the await.
-        replyAudio.src = 'data:audio/wav;base64,' + j.audio;
-        replyAudio.play().catch(err => { voiceStatus = 'tap 🎤 to allow audio'; needDraw = true; });
+      voiceYou = j.you || ''; voiceStatus = '';
+      enqueue(j.audio, j.reply || '');
+      // pull the remaining sentences in the background while the first plays
+      if (j.more && j.job){
+        (async () => {
+          for (let n = 1; n < 24; n++){
+            try {
+              const cr = await fetch(`/voice/chunk?job=${j.job}&n=${n}`);
+              const cj = await cr.json();
+              if (!cj.audio) break;
+              enqueue(cj.audio, cj.text || '');
+              if (!cj.more) break;
+            } catch(e){ break; }
+          }
+        })();
       }
-      if (!voiceReply) voiceStatus = j.note || 'nothing heard';
     }
   } catch(e){ voiceStatus = 'voice failed: ' + (e.message||e); }
   voiceBusy = false; needDraw = true;
