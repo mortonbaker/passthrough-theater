@@ -14,6 +14,14 @@ p.sub{color:#888;margin:0 0 18px}
 .card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#000}
 .card span{display:block;padding:9px 11px;font-size:13px}
 #err{color:#f66;white-space:pre-wrap;margin-top:14px}
+button{background:#2a6df4;color:#fff;border:0;border-radius:10px;padding:18px 34px;
+  font-size:20px;cursor:pointer;margin:0 10px 0 0}
+button.grey{background:#333}
+#stage{position:fixed;inset:0;background:rgba(8,8,10,.96);z-index:5;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;text-align:center}
+#stage img{width:260px;height:260px;object-fit:cover;border-radius:14px;background:#000;margin-bottom:18px}
+#stage h2{font-size:22px;margin:0 0 6px;max-width:760px}
+#stage p{color:#888;margin:0 0 22px}
 #legend{margin-top:24px;color:#777;font-size:13px;line-height:1.9}
 #legend b{color:#bbb}
 canvas.gl{position:fixed;inset:0;z-index:-1}
@@ -25,6 +33,16 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   <p class="sub">tap a video to enter passthrough &mdash; browsing, settings and voice are all in-headset</p>
   <div id="grid"></div>
   <p id="err"></p>
+</div>
+<div id="stage" hidden>
+  <img id="sthumb" alt="">
+  <h2 id="stitle"></h2>
+  <p id="smeta"></p>
+  <div>
+    <button id="go">Enter VR</button>
+    <button id="cancel" class="grey">Back</button>
+  </div>
+  <p id="err2" style="color:#f66"></p>
   <div id="legend">
     <b>Trigger</b> points and clicks &middot; away from a panel it hides/shows the bar,
     hold to re-aim it<br>
@@ -85,7 +103,7 @@ async function loadLib(){
     const c = document.createElement('div');
     c.className='card';
     c.innerHTML = `<img loading="lazy" src="/thumb/${it.id}.jpg"><span>${it.title}</span>`;
-    c.onclick = () => enter(it.id);
+    c.onclick = () => select(it.id);
     $('grid').appendChild(c);
   }
 }
@@ -829,27 +847,56 @@ function pollGamepads(dt, frame){
 }
 
 /* ============================ session ============================ */
-async function enter(id){
-  $('err').textContent='';
-  try { await start(id); }
-  catch(e){ $('err').textContent = 'failed: ' + (e.message||e); cleanup(); }
+// Two steps on purpose. requestSession() only works while the browser still
+// sees a live user gesture, and awaiting the mic prompt / metadata fetch first
+// consumes it -- which silently dropped the session and left the audio running.
+// So: prepare here, then let the Enter VR click own the session request.
+let starting = false, pending = null;
+async function select(id){
+  if (starting || session) return;
+  $('err').textContent = ''; $('err2').textContent = '';
+  const item = library.find(v => v.id === id) || {};
+  $('sthumb').src = '/thumb/'+id+'.jpg';
+  $('stitle').textContent = item.title || '';
+  $('smeta').textContent = 'preparing…';
+  $('stage').hidden = false;
+  try {
+    const d = await (await fetch('/video/'+id)).json();
+    // permission prompt must happen out here: it cannot be shown once immersed
+    try { await ensureMic(); } catch(e){ voiceStatus = 'mic not allowed'; }
+    pending = {id, detail:d};
+    $('smeta').textContent = `${d.screenType} · ${d.stereoMode} · ${fmt(d.videoLength||0)}`
+      + (d.voice ? ` · voice: ${d.voice}` : '');
+  } catch(e){
+    $('err2').textContent = 'could not load: ' + (e.message||e);
+  }
 }
-async function start(id){
+$('cancel').onclick = () => { pending = null; $('stage').hidden = true; };
+$('go').onclick = async () => {
+  if (!pending || starting || session) return;
+  starting = true; $('err2').textContent = '';
+  try { await start(pending.id, pending.detail); }
+  catch(e){ $('err2').textContent = 'failed: ' + (e.message||e); cleanup(); }
+  starting = false;
+};
+
+async function start(id, pre){
   if (!navigator.xr) throw new Error('WebXR unavailable — open the https URL');
-  // mic permission must be granted here: the prompt is 2D and cannot be shown in-session
-  try { await ensureMic(); } catch(e){ voiceStatus = 'mic not allowed'; }
+  // FIRST, while the click is still live: everything else can wait.
+  const xrs = await navigator.xr.requestSession('immersive-ar');
 
   vidId = id;
-  detail = await (await fetch('/video/'+id)).json();
+  detail = pre || await (await fetch('/video/'+id)).json();
   const ch = detail.chroma || {};
   keyState.color = ch.color || '#000000';
   keyState.similarity = ch.similarity ?? 0.10;
   keyState.smoothness = ch.smoothness ?? 0.08;
 
+  if (video){ try{ video.pause(); video.src=''; }catch(e){} }
   video = document.createElement('video');
   video.src = detail.encodings[0].videoSources[0].url;
   video.loop = true; video.playsInline = true; video.volume = videoVol;
-  await video.play();
+  await video.play().catch(()=>{});
   replyAudio.volume = chatVol;
   try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
         replyAudio.pause(); replyAudio.muted=false; } catch(e){}
@@ -885,11 +932,11 @@ async function start(id){
     scene.add(c);
   }
 
-  session = await navigator.xr.requestSession('immersive-ar');
+  session = xrs;
   session.addEventListener('end', cleanup);
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
-  $('lib').hidden = true;
+  $('stage').hidden = true; $('lib').hidden = true; pending = null;
 
   let last=performance.now(), tick=0, anchored=false;
   renderer.setAnimationLoop((t, frame) => {
@@ -909,7 +956,9 @@ async function start(id){
 function cleanup(){
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
   try{ session && session.end(); }catch(e){}
-  try{ video && video.pause(); }catch(e){}
+  // release the media element, or its audio keeps playing after exit
+  try{ video && video.pause(); video && (video.src=''); video && video.load(); }catch(e){}
+  try{ replyAudio.pause(); replyAudio.src=''; }catch(e){}
   try{ renderer && renderer.domElement.remove(); renderer.dispose(); }catch(e){}
   try{ recStop(); }catch(e){}
   try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
@@ -918,7 +967,8 @@ function cleanup(){
   panels={}; lasers={}; ctrls={}; drag=null; aiming=null; triggerDown={};
   micStream=null; vadCtx=null; listening=false; playing=false; playQueue=[];
   prevBtn.left={}; prevBtn.right={};
-  $('lib').hidden = false;
+  starting=false; pending=null;
+  $('stage').hidden = true; $('lib').hidden = false;
 }
 
 loadLib();
