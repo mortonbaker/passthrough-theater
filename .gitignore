@@ -3,3 +3,4 @@ thumbs/
 cache.json
 *.pyc
 __pycache__/
+.syntax-check.mjs

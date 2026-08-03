@@ -877,9 +877,9 @@ function pollGamepads(dt, frame){
           }
           if (sy){ scl=clamp(scl*(1-sy*dt*0.8),0.3,3); applyTransform(); }
         } else grab=null;
-      } else grab=null;
+      }
     } else {
-      if (advMode){
+      {
         if (sy){ if (grip) dist=clamp(dist-sy*dt*1.6,-3,3); else scl=clamp(scl*(1-sy*dt*0.8),0.3,3); applyTransform(); }
         if (sx && performance.now()>seekCool && Math.abs(sx)>0.6 && video && video.duration){
           video.currentTime = clamp(video.currentTime+(sx>0?10:-10),0,video.duration);
