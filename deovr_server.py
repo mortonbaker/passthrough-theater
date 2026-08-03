@@ -163,6 +163,49 @@ def chapters_of(path):
     return marks
 
 
+def auto_key_color(entry):
+    """Sample the video's own background colour for the chroma key default.
+
+    SLR passthrough scenes ship a grey-blue room, not black, so a black key
+    default leaves the whole room visible. The room dominates the poster frame
+    by area, so the per-channel median of the frame - after dropping the black
+    vignette outside the fisheye image circle and blown highlights - lands on
+    the wall colour. Cached per file; sidecar chroma always wins over this.
+    """
+    try:
+        key = "akey:%s:%d" % (entry["path"], int(os.path.getmtime(entry["path"])))
+    except OSError:
+        return None
+    with _cache_lock:
+        if key in _cache:
+            return _cache[key]
+    color = None
+    jpg = thumb_for(entry)
+    if jpg:
+        try:
+            out = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-i", jpg,
+                 "-vf", "scale=32:32", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                capture_output=True, timeout=30)
+            px = out.stdout
+            keep = []
+            for i in range(0, len(px) - 2, 3):
+                r, g, b = px[i], px[i+1], px[i+2]
+                if max(r, g, b) < 40 or min(r, g, b) > 230:
+                    continue          # vignette or blowout, not the room
+                keep.append((r, g, b))
+            if len(keep) >= 50:
+                mid = len(keep) // 2
+                med = tuple(sorted(p[c] for p in keep)[mid] for c in range(3))
+                color = "#%02x%02x%02x" % med
+        except Exception:
+            color = None
+    with _cache_lock:
+        _cache[key] = color
+        save_cache()
+    return color
+
+
 def is_faststart(path):
     """True when moov precedes mdat, i.e. the file can stream without a full pull."""
     try:
@@ -535,6 +578,13 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
             for extra in ("chroma", "alphaPack", "voice"):
                 if it.get(extra) is not None:
                     detail[extra] = it[extra]
+            # no operator-saved chroma: default the key to the sampled room
+            # colour of this video's own background (the "smart" default)
+            if detail.get("chroma") is None:
+                color = auto_key_color(it)
+                if color:
+                    detail["chroma"] = {"color": color, "similarity": 0.10,
+                                        "smoothness": 0.08, "auto": True}
             return self.send_json(detail)
         self.send_error(404, "no such video")
 

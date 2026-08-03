@@ -593,10 +593,11 @@ const ADV_ROWS = [
 ];
 const ADVW = [];
 {
-  ADVW.push({id:'keyblack', type:'btn', x:300, y:34, w:190, h:66});
-  ADVW.push({id:'keygreen', type:'btn', x:504, y:34, w:190, h:66});
-  ADVW.push({id:'reset',    type:'btn', x:730, y:34, w:170, h:66});
-  ADVW.push({id:'save',     type:'btn', x:914, y:34, w:170, h:66});
+  ADVW.push({id:'keyroom',  type:'btn', x:300, y:34, w:150, h:66});
+  ADVW.push({id:'keyblack', type:'btn', x:462, y:34, w:150, h:66});
+  ADVW.push({id:'keygreen', type:'btn', x:624, y:34, w:150, h:66});
+  ADVW.push({id:'reset',    type:'btn', x:786, y:34, w:140, h:66});
+  ADVW.push({id:'save',     type:'btn', x:938, y:34, w:140, h:66});
   ADV_ROWS.forEach((r,i)=>ADVW.push({id:r.id, type:'slider', row:r,
     x:300, y:130+i*84, w:600, h:64,
     get:()=>(r.get()-r.min)/(r.max-r.min), set:v=>r.set(r.min+v*(r.max-r.min))}));
@@ -616,10 +617,13 @@ function drawAdv(p){
   panelBG(c,W,H);
   const hov=id=>p.hover===id;
   c.fillStyle=C.txt; c.font='32px system-ui'; c.fillText('advanced', 60, 76);
-  btn(c, ADVW[0], 'black key', {on:keyState.color==='#000000', hover:hov('keyblack'), font:'26px'});
-  btn(c, ADVW[1], 'green key', {on:keyState.color==='#00ff00', hover:hov('keygreen'), font:'26px'});
-  btn(c, ADVW[2], 'reset', {hover:hov('reset'), font:'26px'});
-  btn(c, ADVW[3], 'save',  {hover:hov('save'),  font:'26px'});
+  const roomColor = detail && detail.chroma && detail.chroma.color;
+  btn(c, ADVW[0], 'room',  {on:!!roomColor && keyState.color===roomColor,
+      hover:hov('keyroom'), font:'26px', muted:!roomColor});
+  btn(c, ADVW[1], 'black', {on:keyState.color==='#000000', hover:hov('keyblack'), font:'26px'});
+  btn(c, ADVW[2], 'green', {on:keyState.color==='#00ff00', hover:hov('keygreen'), font:'26px'});
+  btn(c, ADVW[3], 'reset', {hover:hov('reset'), font:'26px'});
+  btn(c, ADVW[4], 'save',  {hover:hov('save'),  font:'26px'});
   for (const w of ADVW){
     if (w.type==='slider')
       slider(c, w, w.get(), {hover:hov(w.id), label:w.row.label, value:w.row.f(w.row.get())});
@@ -891,6 +895,8 @@ function widgetClickInner(p, w){
     case 'k_clear': libQuery=''; libApply(); break;
     case 'pg_prev': libPage = Math.max(0, libPage-1); break;
     case 'pg_next': libPage = Math.min(Math.max(0,Math.ceil(libFiltered.length/LIB_PER)-1), libPage+1); break;
+    case 'keyroom': if (detail && detail.chroma && detail.chroma.color){
+        keyState.color = detail.chroma.color; applyKey(); } break;
     case 'keyblack': keyState.color='#000000'; applyKey(); break;
     case 'keygreen': keyState.color='#00ff00'; applyKey(); break;
     case 'reset': yaw=0;pitch=0;roll=0;posY=0;dist=0;scl=1; applyTransform(); break;
