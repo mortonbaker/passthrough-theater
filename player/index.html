@@ -5,20 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Passthrough Theater</title>
 <style>
-body{background:#111;color:#eee;font:15px/1.4 system-ui,sans-serif;margin:0;padding:20px}
-h1{font-size:18px;margin:0 0 4px}
-p.sub{color:#888;margin:0 0 20px}
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
-.card{background:#1c1c1c;border-radius:8px;overflow:hidden;cursor:pointer}
-.card:hover{background:#262626}
+body{background:#0e0e0e;color:#eee;font:15px/1.5 system-ui,sans-serif;margin:0;padding:22px}
+h1{font-size:19px;margin:0 0 4px}
+p.sub{color:#888;margin:0 0 18px}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.card{background:#1b1b1b;border-radius:10px;overflow:hidden;cursor:pointer}
+.card:hover{background:#282828}
 .card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#000}
-.card span{display:block;padding:8px 10px;font-size:13px}
-#stage{padding:20px 0}
-button{background:#2a6df4;color:#fff;border:0;border-radius:6px;padding:12px 22px;font-size:16px;cursor:pointer;margin-right:10px}
-button.grey{background:#333}
-#pre{margin-top:16px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;color:#aaa}
-#err{color:#f66;white-space:pre-wrap}
-#legend{margin-top:22px;color:#777;font-size:13px;line-height:1.8}
+.card span{display:block;padding:9px 11px;font-size:13px}
+#err{color:#f66;white-space:pre-wrap;margin-top:14px}
+#legend{margin-top:24px;color:#777;font-size:13px;line-height:1.9}
 #legend b{color:#bbb}
 canvas.gl{position:fixed;inset:0;z-index:-1}
 </style>
@@ -26,126 +22,121 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
 <body>
 <div id="lib">
   <h1>Passthrough Theater</h1>
-  <p class="sub">pick a video, then Enter Passthrough</p>
+  <p class="sub">tap a video to enter passthrough &mdash; browsing, settings and voice are all in-headset</p>
   <div id="grid"></div>
-</div>
-<div id="stage" hidden>
-  <h1 id="vtitle"></h1>
-  <p class="sub" id="vmeta"></p>
-  <button id="enter">Enter Passthrough</button>
-  <button id="back" class="grey">Back</button>
-  <div id="pre">
-    <label>key <input id="keycol" type="color" value="#000000"></label>
-    <label>similarity <input id="sim" type="range" min="0" max="0.6" step="0.005"></label>
-    <label>smooth <input id="smo" type="range" min="0" max="0.4" step="0.005"></label>
-  </div>
-  <div id="legend">
-    In headset:<br>
-    <b>Right trigger</b> &mdash; point at menu to click and drag sliders; click away from
-    the menu to show/hide it; hold away from the menu to move it where you point<br>
-    <b>&#9776;</b> opens the scene picker (on-screen keyboard search, paged list) &nbsp;
-    <b>&#127908;</b> talks to the assistant &mdash; or just <b>hold the left trigger</b>
-    away from the menu as push-to-talk<br>
-    <b>&#9881;</b> opens settings: chroma + yaw / pitch / height / zoom /
-    distance sliders &nbsp; <b>ADV</b> toggles gesture controls<br>
-    Gestures (ADV on): <b>right grip</b> grab to aim (twist/tilt/lift, stick zooms),
-    <b>L-stick</b> zoom &amp; seek (grip: distance), <b>X</b> key strength (grip:
-    softness), <b>Y</b> reset &nbsp;&middot;&nbsp; <b>A</b> play/pause and <b>B</b> exit
-    always work
-  </div>
   <p id="err"></p>
+  <div id="legend">
+    <b>Trigger</b> points and clicks &middot; away from a panel it hides/shows the bar,
+    hold to re-aim it<br>
+    <b>&#9776;</b> library &nbsp; <b>&#127908;</b> hands-free voice &nbsp;
+    <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
+  </div>
 </div>
 
 <script type="module">
 import * as THREE from './three.module.js';
 
+/* ============================ config ============================ */
 const FOV = {fisheye190:190, fisheye:180, mkx200:200, mkx220:220, rf52:190, vrca220:220};
 const $ = id => document.getElementById(id);
-const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 const clamp = THREE.MathUtils.clamp;
+const rad = THREE.MathUtils.degToRad, deg = THREE.MathUtils.radToDeg;
+const fmt = s => { s = Math.max(0, s|0); const h = (s/3600)|0, m = ((s%3600)/60)|0, x = s%60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`
+           : `${m}:${String(x).padStart(2,'0')}`; };
+const clock = () => new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
 
+// Ergonomics, from Meta's spatial guidelines: >=0.5m or eyes strain, 1.0-1.5m is
+// the comfortable band, +-30deg horizontal / +20 up / -12 down before neck strain.
+const UI = {
+  barDist: 1.25, barWdeg: 44, barHdeg: 20, barPitch: -12,
+  libDist: 1.7,  libWdeg: 56, libHdeg: 34, libPitch: -6,
+  advDist: 1.35, advWdeg: 40, advHdeg: 26, advPitch: -4,
+  scale: parseFloat(localStorage.getItem('uiScale') || '1'),
+};
+const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
+  txt:'#f0f0f2', dim:'#9a9aa4', accent:'#3d8bff', accent2:'#2a6df4',
+  hover:'#3a3a44', ok:'#5ad07a', rec:'#ff5a5a'};
+
+/* ============================ state ============================ */
 let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, xrCam=null;
-let mats=[], group=null;
+let mats=[], group=null, uiRoot=null;
 let yaw=0, pitch=0, posY=0, dist=0, scl=1;
+let advMode = localStorage.getItem('advMode') === '1';
+let screenMode = 'bar';                       // 'bar' | 'browse'
+let menuOn = true;
+let library=[], libFiltered=[], libPage=0, libQuery='';
+const LIB_COLS=4, LIB_ROWS=3, LIB_PER=LIB_COLS*LIB_ROWS;
+let videoVol = parseFloat(localStorage.getItem('videoVol') || '1');
+let chatVol  = parseFloat(localStorage.getItem('chatVol')  || '1');
 let saveNote='', noteUntil=0;
-let advMode = localStorage.getItem('advMode') !== '0';
-const prevBtn = {left:{}, right:{}};
+const prevBtn={left:{},right:{}};
 let seekCool=0, grab=null;
-function angDelta(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
+const SID = 'vr-' + Math.floor(Math.random()*1e9);
+const thumbs = {};                            // id -> Image
 
-// ---------- library ----------
+/* ============================ library ============================ */
 async function loadLib(){
   const j = await (await fetch('/deovr')).json();
   library = j.scenes[0].list.map(it => ({
     id: it.video_url.split('/').pop(), title: it.title, videoLength: it.videoLength}));
   libApply();
-  for (const it of j.scenes[0].list){
-    const id = it.video_url.split('/').pop();
+  for (const it of library){
     const c = document.createElement('div');
     c.className='card';
-    c.innerHTML = `<img loading="lazy" src="/thumb/${id}.jpg"><span>${it.title}</span>`;
-    c.onclick = () => pick(id);
+    c.innerHTML = `<img loading="lazy" src="/thumb/${it.id}.jpg"><span>${it.title}</span>`;
+    c.onclick = () => enter(it.id);
     $('grid').appendChild(c);
   }
 }
-async function pick(id){
-  vidId = id;
-  detail = await (await fetch('/video/'+id)).json();
-  $('lib').hidden = true; $('stage').hidden = false;
-  $('vtitle').textContent = detail.title;
-  $('vmeta').textContent = `${detail.screenType} | ${detail.stereoMode} | ${detail.videoLength}s`
-      + (detail.alphaPack ? ` | matte:${detail.alphaPack}` : '')
-      + (detail.chroma ? ' | chroma from sidecar' : '');
-  const ch = detail.chroma || {};
-  $('keycol').value = ch.color || '#000000';
-  $('sim').value = ch.similarity ?? 0.10;
-  $('smo').value = ch.smoothness ?? 0.08;
+function libApply(){
+  const q = libQuery.trim().toLowerCase();
+  libFiltered = q ? library.filter(v => v.title.toLowerCase().includes(q)) : library.slice();
+  libPage = 0;
 }
-$('back').onclick = () => { $('stage').hidden = true; $('lib').hidden = false; };
+function thumbOf(id){
+  if (thumbs[id]) return thumbs[id];
+  const im = new Image();
+  im.onload = () => { needDraw = true; };
+  im.src = '/thumb/'+id+'.jpg';
+  thumbs[id] = im;
+  return im;
+}
 
-// ---------- geometry ----------
+/* ============================ screen geometry ============================ */
 function fisheyeGeo(fovDeg, R=8, seg=72){
-  const tMax = THREE.MathUtils.degToRad(fovDeg/2);
-  const pos=[], uv=[], idx=[];
+  const tMax = rad(fovDeg/2), pos=[], uv=[], idx=[];
   for (let j=0;j<=seg;j++) for (let i=0;i<=seg;i++){
-    const t = j/seg*tMax, p = i/seg*Math.PI*2;
-    const st=Math.sin(t), ct=Math.cos(t);
+    const t=j/seg*tMax, p=i/seg*Math.PI*2, st=Math.sin(t), ct=Math.cos(t);
     pos.push(R*st*Math.cos(p), R*st*Math.sin(p), -R*ct);
-    const r = (t/tMax)*0.5;
-    uv.push(0.5 + r*Math.cos(p), 0.5 + r*Math.sin(p));
+    const r=(t/tMax)*0.5;
+    uv.push(0.5+r*Math.cos(p), 0.5+r*Math.sin(p));
   }
   for (let j=0;j<seg;j++) for (let i=0;i<seg;i++){
     const a=j*(seg+1)+i, b=a+1, c=a+seg+1, d=c+1;
     idx.push(a,b,c, b,d,c);
   }
-  const g = new THREE.BufferGeometry();
+  const g=new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv,2));
-  g.setIndex(idx);
-  return g;
+  g.setIndex(idx); return g;
 }
 function domeGeo(full){
-  const g = new THREE.SphereGeometry(8, 72, 72, full? 0 : Math.PI/2, full? Math.PI*2 : Math.PI);
-  g.scale(-1,1,1);
-  return g;
+  const g=new THREE.SphereGeometry(8,72,72, full?0:Math.PI/2, full?Math.PI*2:Math.PI);
+  g.scale(-1,1,1); return g;
 }
 
-// ---------- material ----------
 const FRAG = `
-precision highp float;
-varying vec2 vUv;
-uniform sampler2D map;
-uniform vec2 uvOff, uvScl, matteOff;
-uniform int useMatte, useKey;
-uniform vec3 keyColor;
+precision highp float; varying vec2 vUv;
+uniform sampler2D map; uniform vec2 uvOff, uvScl, matteOff;
+uniform int useMatte, useKey; uniform vec3 keyColor;
 uniform float similarity, smoothness, spill;
 void main(){
   vec2 cuv = vUv*uvScl + uvOff;
   vec4 c = texture2D(map, cuv);
   float a = 1.0;
-  if (useMatte==1){
-    a = texture2D(map, cuv + matteOff).r;
-  } else if (useKey==1){
+  if (useMatte==1) a = texture2D(map, cuv + matteOff).r;
+  else if (useKey==1){
     float d = distance(c.rgb, keyColor);
     a = smoothstep(similarity, similarity+smoothness, d);
     if (spill>0.5){ float g=max(c.r,c.b); c.g = min(c.g, g + (c.g-g)*0.2); }
@@ -155,349 +146,417 @@ void main(){
 }`;
 const VERT = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
 
+const keyState = {color:'#000000', similarity:0.10, smoothness:0.08};
 function makeMat(tex){
-  return new THREE.ShaderMaterial({
-    transparent:true, side:THREE.DoubleSide, depthWrite:false,
-    uniforms:{
-      map:{value:tex},
-      uvOff:{value:new THREE.Vector2(0,0)}, uvScl:{value:new THREE.Vector2(1,1)},
-      matteOff:{value:new THREE.Vector2(0,0)}, useMatte:{value:0}, useKey:{value:1},
-      keyColor:{value:new THREE.Color($('keycol').value)},
-      similarity:{value:parseFloat($('sim').value)},
-      smoothness:{value:parseFloat($('smo').value)},
-      spill:{value:0},
-    },
-    vertexShader:VERT, fragmentShader:FRAG,
-  });
+  return new THREE.ShaderMaterial({transparent:true, side:THREE.DoubleSide, depthWrite:false,
+    uniforms:{ map:{value:tex},
+      uvOff:{value:new THREE.Vector2()}, uvScl:{value:new THREE.Vector2(1,1)},
+      matteOff:{value:new THREE.Vector2()}, useMatte:{value:0}, useKey:{value:1},
+      keyColor:{value:new THREE.Color(keyState.color)},
+      similarity:{value:keyState.similarity}, smoothness:{value:keyState.smoothness},
+      spill:{value:0}},
+    vertexShader:VERT, fragmentShader:FRAG});
 }
-function eyeUV(mat, eye, sbs, matteTB){
-  const sx = sbs? 0.5 : 1, ox = (sbs && eye===1)? 0.5 : 0;
-  if (matteTB){
-    mat.uniforms.uvScl.value.set(sx, 0.5);
-    mat.uniforms.uvOff.value.set(ox, 0.5);
-    mat.uniforms.matteOff.value.set(0, -0.5);
-    mat.uniforms.useMatte.value = 1;
-  } else {
-    mat.uniforms.uvScl.value.set(sx, 1);
-    mat.uniforms.uvOff.value.set(ox, 0);
-  }
+function eyeUV(m, eye, sbs, matteTB){
+  const sx=sbs?0.5:1, ox=(sbs&&eye===1)?0.5:0;
+  if (matteTB){ m.uniforms.uvScl.value.set(sx,0.5); m.uniforms.uvOff.value.set(ox,0.5);
+    m.uniforms.matteOff.value.set(0,-0.5); m.uniforms.useMatte.value=1; }
+  else { m.uniforms.uvScl.value.set(sx,1); m.uniforms.uvOff.value.set(ox,0); }
 }
 function applyKey(){
   for (const m of mats){
-    m.uniforms.keyColor.value.set($('keycol').value);
-    m.uniforms.similarity.value = parseFloat($('sim').value);
-    m.uniforms.smoothness.value = parseFloat($('smo').value);
-    const c = new THREE.Color($('keycol').value);
+    m.uniforms.keyColor.value.set(keyState.color);
+    m.uniforms.similarity.value = keyState.similarity;
+    m.uniforms.smoothness.value = keyState.smoothness;
+    const c = new THREE.Color(keyState.color);
     m.uniforms.spill.value = (c.g > c.r*1.5 && c.g > c.b*1.5) ? 1 : 0;
   }
 }
-for (const id of ['keycol','sim','smo']) $(id).oninput = applyKey;
-
-async function saveSidecar(){
-  const body = {chroma:{color:$('keycol').value,
-    similarity:parseFloat($('sim').value), smoothness:parseFloat($('smo').value)}};
-  const r = await fetch('/sidecar/'+vidId, {method:'POST', body: JSON.stringify(body)});
-  saveNote = r.ok ? 'saved' : 'SAVE FAILED';
-  noteUntil = performance.now() + 2500;
-  needDraw = true;
-}
 function applyTransform(){
   if (!group) return;
-  group.rotation.order = 'YXZ';
-  group.rotation.y = yaw;
-  group.rotation.x = pitch;
-  group.position.y = posY;
-  group.position.z = dist;
+  group.rotation.order='YXZ';
+  group.rotation.y=yaw; group.rotation.x=pitch;
+  group.position.y=posY; group.position.z=dist;
   group.scale.setScalar(scl);
 }
 
-// ================= in-world menu (laser + canvas UI) =================
-let panelGroup=null, mainMesh=null, popMesh=null, libMesh=null, libCtx=null, libTex=null;
-let mainCtx=null, mainTex=null, popCtx=null, popTex=null;
-let menuOn=true, popOn=false, libOn=false, needDraw=true;
-let library=[], libFiltered=[], libPage=0, libQuery='';
-const LIB_ROWS = 6;
-// voice assistant state
-let micOn=false, micRec=null, micChunks=[], micStream=null, voiceBusy=false;
-const replyAudio = new Audio();   // primed on entry so replies can autoplay
-let voiceYou='', voiceReply='', voiceStatus='';
-const SID = 'vr-' + Math.floor(Math.random()*1e9);
-let lasers={};             // hand -> {line, dot}
-let drag=null;             // {hand, widget, panel}
-let moveMenu=null;         // {hand}
-let triggerDown={};        // hand -> {t, overUI}
-const raycaster = new THREE.Raycaster();
-const tmpM = new THREE.Matrix4();
-
-const deg = v => v*180/Math.PI, rad = v => v*Math.PI/180;
-// widget defs: canvas-space rects. Sliders: get/set in real units.
-const MAIN_W = [
-  {id:'play', type:'btn',  x:24,  y:70, w:104, h:130},
-  {id:'seek', type:'slider', x:160, y:120, w:472, h:60,
-    get:()=> video && video.duration ? video.currentTime/video.duration : 0,
-    set:v => { if (video && video.duration) video.currentTime = v*video.duration; }},
-  {id:'lib',  type:'btn', x:664, y:70, w:104, h:130},
-  {id:'mic',  type:'btn', x:780, y:70, w:104, h:130},
-  {id:'gear', type:'btn', x:896, y:70, w:52, h:130},
-  {id:'adv',  type:'btn', x:960, y:70, w:52, h:130},
-];
-const POP_ROWS = [
-  {id:'sim',  label:'key strength', min:0, max:0.35, get:()=>+$('sim').value, set:v=>{$('sim').value=v; applyKey();}, fmt:v=>v.toFixed(2)},
-  {id:'smo',  label:'softness',     min:0, max:0.25, get:()=>+$('smo').value, set:v=>{$('smo').value=v; applyKey();}, fmt:v=>v.toFixed(2)},
-  {id:'yaw',  label:'yaw',    min:-180, max:180, get:()=>deg(yaw),  set:v=>{yaw=rad(v); applyTransform();},  fmt:v=>v.toFixed(0)+'°'},
-  {id:'pit',  label:'pitch',  min:-75,  max:75,  get:()=>deg(pitch),set:v=>{pitch=rad(v); applyTransform();},fmt:v=>v.toFixed(0)+'°'},
-  {id:'hgt',  label:'height', min:-1.5, max:1.5, get:()=>posY, set:v=>{posY=v; applyTransform();}, fmt:v=>v.toFixed(2)+'m'},
-  {id:'zoom', label:'zoom',   min:0.3,  max:3,   get:()=>scl,  set:v=>{scl=v; applyTransform();},  fmt:v=>v.toFixed(2)},
-  {id:'dist', label:'distance', min:-3, max:3,   get:()=>dist, set:v=>{dist=v; applyTransform();}, fmt:v=>v.toFixed(2)+'m'},
-];
-// scene picker: search keys + a page of results + pager
-const LIB_W = [];
-{
-  const KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
-  KEYS.forEach((k,i) => {
-    LIB_W.push({id:'k_'+k, type:'btn', key:k,
-      x: 40 + (i%18)*54, y: 96 + Math.floor(i/18)*58, w:48, h:50});
-  });
-  LIB_W.push({id:'k_space', type:'btn', key:' ', x:40,  y:214, w:150, h:50});
-  LIB_W.push({id:'k_back',  type:'btn', x:200, y:214, w:130, h:50});
-  LIB_W.push({id:'k_clear', type:'btn', x:340, y:214, w:130, h:50});
-  for (let i=0;i<LIB_ROWS;i++)
-    LIB_W.push({id:'row_'+i, type:'btn', row:i, x:40, y:290+i*66, w:944, h:58});
-  LIB_W.push({id:'pg_prev', type:'btn', x:40,  y:690, w:150, h:52});
-  LIB_W.push({id:'pg_next', type:'btn', x:200, y:690, w:150, h:52});
-  LIB_W.push({id:'lib_close', type:'btn', x:834, y:690, w:150, h:52});
-}
-
-const POP_W = [];
-{ // build popup widget rects: header buttons + one slider per row
-  POP_W.push({id:'keyblack', type:'btn', x:250, y:26, w:170, h:64});
-  POP_W.push({id:'keygreen', type:'btn', x:440, y:26, w:170, h:64});
-  POP_W.push({id:'reset',    type:'btn', x:640, y:26, w:160, h:64});
-  POP_W.push({id:'save',     type:'btn', x:820, y:26, w:160, h:64});
-  POP_ROWS.forEach((r,i) => {
-    POP_W.push({id:r.id, type:'slider', x:280, y:118+i*86, w:600, h:56, row:r,
-      get:()=> (r.get()-r.min)/(r.max-r.min),
-      set:v => r.set(r.min + v*(r.max-r.min))});
-  });
-}
-
-function makeMenu(){
-  panelGroup = new THREE.Group();
-  panelGroup.position.set(0, -0.32, -1.1);
-  panelGroup.rotation.x = -0.28;
-  // main bar
-  const mc = document.createElement('canvas'); mc.width=1024; mc.height=270;
-  mainCtx = mc.getContext('2d');
-  mainTex = new THREE.CanvasTexture(mc);
-  mainMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.169),
-    new THREE.MeshBasicMaterial({map:mainTex, transparent:true, depthTest:false}));
-  mainMesh.renderOrder = 10; mainMesh.userData.widgets = MAIN_W; mainMesh.userData.ctxW=1024; mainMesh.userData.ctxH=270;
-  panelGroup.add(mainMesh);
-  // popup
-  const pc = document.createElement('canvas'); pc.width=1024; pc.height=740;
-  popCtx = pc.getContext('2d');
-  popTex = new THREE.CanvasTexture(pc);
-  popMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.462),
-    new THREE.MeshBasicMaterial({map:popTex, transparent:true, depthTest:false}));
-  popMesh.renderOrder = 11; popMesh.position.set(0, 0.33, 0);
-  popMesh.userData.widgets = POP_W; popMesh.userData.ctxW=1024; popMesh.userData.ctxH=740;
-  popMesh.visible = false;
-  panelGroup.add(popMesh);
-  // library / scene picker
-  const lc = document.createElement('canvas'); lc.width=1024; lc.height=760;
-  libCtx = lc.getContext('2d');
-  libTex = new THREE.CanvasTexture(lc);
-  libMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.534),
-    new THREE.MeshBasicMaterial({map:libTex, transparent:true, depthTest:false}));
-  libMesh.renderOrder = 11; libMesh.position.set(0, 0.38, 0);
-  libMesh.userData.widgets = LIB_W; libMesh.userData.ctxW=1024; libMesh.userData.ctxH=760;
-  libMesh.visible = false;
-  panelGroup.add(libMesh);
-  return panelGroup;
-}
-function libApply(){
-  const q = libQuery.trim().toLowerCase();
-  libFiltered = q ? library.filter(v => v.title.toLowerCase().includes(q)) : library.slice();
-  libPage = 0;
-}
-function drawLib(){
-  const c = libCtx; c.clearRect(0,0,1024,760);
-  c.fillStyle='rgba(12,12,12,0.9)'; roundRect(c,0,0,1024,760,26); c.fill();
-  c.fillStyle='#eee'; c.font='34px system-ui';
-  c.fillText('search: ' + (libQuery || '_'), 40, 60);
-  c.fillStyle='#777'; c.font='26px system-ui';
-  c.fillText(`${libFiltered.length} of ${library.length}`, 800, 60);
-  for (const wd of LIB_W){
-    if (wd.key) drawBtn(c, wd, wd.key===' ' ? 'space' : wd.key, false);
-    else if (wd.id==='k_back') drawBtn(c, wd, 'del', false);
-    else if (wd.id==='k_clear') drawBtn(c, wd, 'clear', false);
+/* ============================ curved UI panels ============================ */
+// Panels orbit the user at a fixed radius, so apparent size stays constant no
+// matter where they are aimed (distance-independent sizing).
+let panels = {}, needDraw = true;
+function curvedGeo(wRad, hM, R, segX=64){
+  const pos=[], uv=[], idx=[];
+  for (let j=0;j<=1;j++) for (let i=0;i<=segX;i++){
+    const u=i/segX, a=(u-0.5)*wRad;
+    pos.push(R*Math.sin(a), (0.5-j)*hM, -R*Math.cos(a));
+    uv.push(u, 1-j);
   }
-  const start = libPage*LIB_ROWS;
-  for (let i=0;i<LIB_ROWS;i++){
-    const wd = LIB_W.find(w=>w.id==='row_'+i);
-    const item = libFiltered[start+i];
-    c.fillStyle = item ? '#1e1e1e' : '#141414';
-    roundRect(c, wd.x, wd.y, wd.w, wd.h, 12); c.fill();
-    if (item){
-      const cur = detail && item.id===vidId;
-      c.fillStyle = cur ? '#2a6df4' : '#ddd'; c.font='30px system-ui';
-      let t = item.title; if (t.length > 52) t = t.slice(0,51)+'…';
-      c.fillText(t, wd.x+18, wd.y+38);
-      c.fillStyle='#777'; c.font='24px system-ui';
-      c.fillText(fmt(item.videoLength||0), wd.x+wd.w-110, wd.y+38);
-    }
+  for (let i=0;i<segX;i++){
+    const a=i, b=i+1, c=i+segX+1, d=c+1;
+    idx.push(a,b,c, b,d,c);
   }
-  const pages = Math.max(1, Math.ceil(libFiltered.length/LIB_ROWS));
-  drawBtn(c, LIB_W.find(w=>w.id==='pg_prev'), 'prev', false);
-  drawBtn(c, LIB_W.find(w=>w.id==='pg_next'), 'next', false);
-  c.fillStyle='#888'; c.font='26px system-ui';
-  c.fillText(`page ${libPage+1}/${pages}`, 370, 725);
-  drawBtn(c, LIB_W.find(w=>w.id==='lib_close'), 'close', false);
-  libTex.needsUpdate = true;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx); return g;
 }
-function roundRect(c,x,y,w,h,r){ c.beginPath(); c.roundRect(x,y,w,h,r); }
-function drawBtn(c,wd,label,on){
-  c.fillStyle = on? '#2a6df4' : '#2c2c2c';
-  roundRect(c, wd.x, wd.y, wd.w, wd.h, 16); c.fill();
-  c.fillStyle = '#eee'; c.font='40px system-ui'; c.textAlign='center'; c.textBaseline='middle';
-  c.fillText(label, wd.x+wd.w/2, wd.y+wd.h/2+2);
+function makePanel(name, o){
+  const s = UI.scale;
+  const wRad = rad(o.wDeg*s), hM = o.dist * rad(o.hDeg*s);
+  const cw = o.cw, ch = Math.round(cw * (hM / (o.dist*wRad)));
+  const cv = document.createElement('canvas'); cv.width=cw; cv.height=ch;
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
+  const mesh = new THREE.Mesh(curvedGeo(wRad, hM, o.dist),
+    new THREE.MeshBasicMaterial({map:tex, transparent:true, depthTest:false, depthWrite:false}));
+  mesh.renderOrder = o.order || 10;
+  const holder = new THREE.Group();
+  holder.rotation.order = 'YXZ';
+  holder.rotation.x = rad(o.pitch || 0);
+  holder.add(mesh);
+  const p = {name, mesh, holder, cv, ctx:cv.getContext('2d'), tex,
+             widgets:o.widgets || [], hover:null, draw:o.draw};
+  panels[name] = p;
+  return p;
+}
+function panelVisible(name, on){ if (panels[name]) panels[name].holder.visible = on; }
+
+/* ---- canvas drawing helpers (sizes are canvas px; panels are angular) ---- */
+function rr(c,x,y,w,h,r){ c.beginPath(); c.roundRect(x,y,w,h,r); }
+function btn(c, w, label, opt={}){
+  const on = opt.on, hov = opt.hover;
+  c.fillStyle = on ? C.accent2 : (hov ? C.hover : '#26262c');
+  rr(c, w.x, w.y, w.w, w.h, opt.radius ?? 14); c.fill();
+  if (hov && !on){ c.strokeStyle = C.accent; c.lineWidth = 3; c.stroke(); }
+  c.fillStyle = opt.muted ? C.dim : C.txt;
+  c.font = (opt.font || '30px') + ' system-ui';
+  c.textAlign='center'; c.textBaseline='middle';
+  c.fillText(label, w.x+w.w/2, w.y+w.h/2+1);
   c.textAlign='left'; c.textBaseline='alphabetic';
 }
-function drawSlider(c, wd, frac, label, valTxt){
-  c.fillStyle='#333'; roundRect(c, wd.x, wd.y+wd.h/2-8, wd.w, 16, 8); c.fill();
-  c.fillStyle='#2a6df4'; roundRect(c, wd.x, wd.y+wd.h/2-8, Math.max(8, wd.w*clamp(frac,0,1)), 16, 8); c.fill();
-  c.fillStyle='#ddd'; c.beginPath();
-  c.arc(wd.x + wd.w*clamp(frac,0,1), wd.y+wd.h/2, 22, 0, 7); c.fill();
-  if (label){ c.fillStyle='#aaa'; c.font='32px system-ui'; c.fillText(label, 40, wd.y+wd.h/2+11); }
-  if (valTxt){ c.fillStyle='#ccc'; c.font='30px system-ui'; c.fillText(valTxt, wd.x+wd.w+22, wd.y+wd.h/2+10); }
+function slider(c, w, frac, opt={}){
+  const y = w.y + w.h/2, f = clamp(frac,0,1);
+  c.fillStyle = '#33333c'; rr(c, w.x, y-7, w.w, 14, 7); c.fill();
+  c.fillStyle = opt.hover ? C.accent : C.accent2; rr(c, w.x, y-7, Math.max(10, w.w*f), 14, 7); c.fill();
+  c.fillStyle = opt.hover ? '#fff' : '#dcdce4';
+  c.beginPath(); c.arc(w.x + w.w*f, y, opt.hover?20:16, 0, 7); c.fill();
+  if (opt.label){ c.fillStyle=C.dim; c.font='26px system-ui'; c.textAlign='right';
+    c.fillText(opt.label, w.x-18, y+9); c.textAlign='left'; }
+  if (opt.value){ c.fillStyle=C.txt; c.font='26px system-ui'; c.fillText(opt.value, w.x+w.w+18, y+9); }
 }
-function drawMain(){
-  const c = mainCtx; c.clearRect(0,0,1024,270);
-  c.fillStyle='rgba(12,12,12,0.8)'; roundRect(c,0,0,1024,270,26); c.fill();
-  drawBtn(c, MAIN_W[0], video && !video.paused ? '❚❚' : '▶', false);
-  const t = video? video.currentTime:0, d = (video && video.duration)||detail.videoLength||0;
-  c.fillStyle='#ccc'; c.font='30px system-ui';
-  c.fillText(`${fmt(t)} / ${fmt(d)}`, 190, 58);
-  if (performance.now() < noteUntil){ c.fillStyle='#4f4'; c.fillText(saveNote, 420, 58); }
-  drawSlider(c, MAIN_W[1], d? t/d : 0, null, null);
-  drawBtn(c, MAIN_W[2], '☰', libOn);
-  drawBtn(c, MAIN_W[3], micOn ? '● REC' : '🎤', micOn || voiceBusy);
-  drawBtn(c, MAIN_W[4], '⚙', popOn);
-  drawBtn(c, MAIN_W[5], 'ADV', advMode);
-  c.fillStyle='#777'; c.font='23px system-ui';
-  if (voiceStatus || voiceReply){
-    c.fillStyle = micOn ? '#f66' : '#8c8';
-    let line = voiceStatus || ('Mariko: ' + voiceReply);
-    if (line.length > 62) line = line.slice(0,61)+'…';
-    c.fillText(line, 160, 238);
-  } else {
-    c.fillText('trigger: click · away: show/hide · hold away: move menu', 160, 238);
-  }
-  mainTex.needsUpdate = true;
-}
-function drawPop(){
-  const c = popCtx; c.clearRect(0,0,1024,740);
-  c.fillStyle='rgba(12,12,12,0.85)'; roundRect(c,0,0,1024,740,26); c.fill();
-  c.fillStyle='#aaa'; c.font='32px system-ui'; c.fillText('key', 40, 70);
-  const key = $('keycol').value.toLowerCase();
-  drawBtn(c, POP_W[0], 'black', key==='#000000');
-  drawBtn(c, POP_W[1], 'green', key==='#00ff00');
-  drawBtn(c, POP_W[2], 'reset', false);
-  drawBtn(c, POP_W[3], 'save', false);
-  for (const wd of POP_W){
-    if (wd.type!=='slider') continue;
-    drawSlider(c, wd, wd.get(), wd.row.label, wd.row.fmt(wd.row.get()));
-  }
-  popTex.needsUpdate = true;
-}
-function drawMenus(){
-  if (!mainCtx) return;
-  drawMain();
-  if (popOn) drawPop();
-  if (libOn) drawLib();
+function panelBG(c, w, h){
+  c.clearRect(0,0,w,h);
+  c.fillStyle = C.bg; rr(c,0,0,w,h,28); c.fill();
+  c.strokeStyle = C.line; c.lineWidth = 2; c.stroke();
 }
 
-// ---------- voice assistant ----------
-async function micStart(){
-  if (micOn || voiceBusy) return;
-  try {
-    if (!micStream) micStream = await navigator.mediaDevices.getUserMedia({audio:true});
-    micChunks = [];
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-               : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
-    micRec = mime ? new MediaRecorder(micStream, {mimeType:mime}) : new MediaRecorder(micStream);
-    micRec.ondataavailable = e => { if (e.data.size) micChunks.push(e.data); };
-    micRec.onstop = sendVoice;
-    micRec.start();
-    micOn = true; voiceStatus = 'listening…'; needDraw = true;
-  } catch(e){ voiceStatus = 'mic denied: ' + (e.message||e); needDraw = true; }
-}
-function micStop(){
-  if (!micOn) return;
-  micOn = false;
-  try { micRec && micRec.state !== 'inactive' && micRec.stop(); } catch(e){}
-}
-// Sentences arrive one at a time. Queue them so playback starts on the first
-// while the rest are still being synthesised.
-let playQueue = [], playing = false;
-function enqueue(b64, text){
-  playQueue.push({b64, text});
-  if (!playing) playNext();
-}
-function playNext(){
-  const item = playQueue.shift();
-  if (!item){ playing = false; voiceStatus=''; needDraw=true; return; }
-  playing = true;
-  voiceReply = item.text; needDraw = true;
-  replyAudio.src = 'data:audio/wav;base64,' + item.b64;
-  replyAudio.onended = playNext;
-  replyAudio.onerror = playNext;
-  replyAudio.play().catch(() => { voiceStatus = 'tap 🎤 to allow audio'; playing=false; needDraw=true; });
+/* ============================ playback bar ============================ */
+const BAR_W = 1536;
+const BAR = [
+  {id:'back',  type:'btn', x:34,  y:26,  w:110, h:84},
+  {id:'play',  type:'btn', x:158, y:26,  w:110, h:84},
+  {id:'seek',  type:'slider', x:60, y:132, w:1416, h:74,
+     get:()=> video && video.duration ? video.currentTime/video.duration : 0,
+     set:v => { if (video && video.duration) video.currentTime = v*video.duration; }},
+  {id:'vvol',  type:'slider', x:190, y:236, w:330, h:64,
+     get:()=>videoVol, set:v=>{ videoVol=v; if(video) video.volume=v;
+       localStorage.setItem('videoVol', v); }},
+  {id:'cvol',  type:'slider', x:700, y:236, w:330, h:64,
+     get:()=>chatVol, set:v=>{ chatVol=v; replyAudio.volume=v;
+       localStorage.setItem('chatVol', v); }},
+  {id:'lib',   type:'btn', x:1100, y:230, w:110, h:80},
+  {id:'mic',   type:'btn', x:1224, y:230, w:130, h:80},
+  {id:'gear',  type:'btn', x:1368, y:230, w:66,  h:80},
+  {id:'adv',   type:'btn', x:1444, y:230, w:66,  h:80},
+];
+function drawBar(p){
+  const c = p.ctx, W = p.cv.width, H = p.cv.height;
+  panelBG(c, W, H);
+  const hov = id => p.hover === id;
+  btn(c, BAR[0], '⟲', {hover:hov('back')});
+  btn(c, BAR[1], video && !video.paused ? '❚❚' : '▶', {hover:hov('play')});
+  const t = video ? video.currentTime : 0, d = (video && video.duration) || (detail && detail.videoLength) || 0;
+  c.fillStyle = C.txt; c.font = '34px system-ui';
+  c.fillText(`${fmt(t)} / ${fmt(d)}`, 296, 82);
+  c.fillStyle = C.dim; c.font = '30px system-ui'; c.textAlign = 'right';
+  c.fillText(clock(), W-40, 82);
+  c.textAlign = 'left';
+  if (detail){ c.fillStyle = C.dim; c.font='26px system-ui';
+    let ti = detail.title || ''; if (ti.length > 44) ti = ti.slice(0,43)+'…';
+    c.fillText(ti, 640, 80); }
+  slider(c, BAR[2], BAR[2].get(), {hover:hov('seek')});
+  slider(c, BAR[3], videoVol, {hover:hov('vvol'), label:'🔊 video', value:Math.round(videoVol*100)+'%'});
+  slider(c, BAR[4], chatVol,  {hover:hov('cvol'), label:'💬 chat',  value:Math.round(chatVol*100)+'%'});
+  btn(c, BAR[5], '☰', {hover:hov('lib')});
+  btn(c, BAR[6], listening ? '● LIVE' : '🎤', {on:listening, hover:hov('mic'), font: listening?'26px':'30px'});
+  btn(c, BAR[7], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
+  btn(c, BAR[8], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
+  if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
+  if (voiceStatus){ c.fillStyle = listening ? C.rec : C.ok; c.font='26px system-ui';
+    let s = voiceStatus; if (s.length>70) s = s.slice(0,69)+'…';
+    c.fillText(s, 60, 330); }
+  else if (voiceReply){ c.fillStyle=C.dim; c.font='26px system-ui';
+    let s = 'Mariko: ' + voiceReply; if (s.length>70) s = s.slice(0,69)+'…';
+    c.fillText(s, 60, 330); }
+  p.tex.needsUpdate = true;
 }
 
-async function sendVoice(){
-  const blob = new Blob(micChunks, {type: (micRec && micRec.mimeType) || 'audio/webm'});
-  micChunks = [];
-  if (blob.size < 2000){ voiceStatus=''; needDraw=true; return; }
-  voiceBusy = true; voiceStatus = 'thinking…'; needDraw = true;
-  playQueue = []; playing = false;
-  try {
-    const r = await fetch('/voice/talk?sid='+SID, {method:'POST', body: blob,
-      headers:{'Content-Type': blob.type || 'audio/webm'}});
-    const j = await r.json();
-    if (j.error && !j.audio){ voiceStatus = 'error: ' + j.error; }
-    else if (!j.audio){ voiceStatus = j.note || 'nothing heard'; }
-    else {
-      voiceYou = j.you || ''; voiceStatus = '';
-      enqueue(j.audio, j.reply || '');
-      // pull the remaining sentences in the background while the first plays
-      if (j.more && j.job){
-        (async () => {
-          for (let n = 1; n < 24; n++){
-            try {
-              const cr = await fetch(`/voice/chunk?job=${j.job}&n=${n}`);
-              const cj = await cr.json();
-              if (!cj.audio) break;
-              enqueue(cj.audio, cj.text || '');
-              if (!cj.more) break;
-            } catch(e){ break; }
-          }
-        })();
-      }
+/* ============================ browse screen ============================ */
+const LIB_CW = 1600;
+const LIBW = [];
+{
+  const KEYS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
+  KEYS.forEach((k,i)=>LIBW.push({id:'k_'+k, type:'btn', key:k,
+    x: 60 + (i%18)*64, y: 120 + Math.floor(i/18)*68, w:56, h:60}));
+  LIBW.push({id:'k_space', type:'btn', key:' ', x:60,  y:256, w:180, h:60});
+  LIBW.push({id:'k_back',  type:'btn', x:252, y:256, w:150, h:60});
+  LIBW.push({id:'k_clear', type:'btn', x:414, y:256, w:150, h:60});
+  LIBW.push({id:'close',   type:'btn', x:1400, y:36, w:150, h:64});
+  const gx=60, gy=350, cw=368, chh=250, gap=14;
+  for (let r=0;r<LIB_ROWS;r++) for (let col=0;col<LIB_COLS;col++){
+    LIBW.push({id:`cell_${r*LIB_COLS+col}`, type:'btn', cell:r*LIB_COLS+col,
+      x: gx+col*(cw+gap), y: gy+r*(chh+gap), w:cw, h:chh});
+  }
+  LIBW.push({id:'pg_prev', type:'btn', x:60,  y:1140, w:160, h:64});
+  LIBW.push({id:'pg_next', type:'btn', x:232, y:1140, w:160, h:64});
+}
+function drawBrowse(p){
+  const c = p.ctx, W = p.cv.width, H = p.cv.height;
+  panelBG(c, W, H);
+  const hov = id => p.hover === id;
+  c.fillStyle = C.txt; c.font = '40px system-ui';
+  c.fillText('Library', 60, 74);
+  c.fillStyle = C.accent; c.font = '34px system-ui';
+  c.fillText(libQuery ? '“'+libQuery+'”' : 'type to search', 260, 74);
+  c.fillStyle = C.dim; c.font = '28px system-ui';
+  c.fillText(`${libFiltered.length} of ${library.length}`, 1120, 74);
+  btn(c, LIBW.find(w=>w.id==='close'), 'close', {hover:hov('close')});
+  for (const w of LIBW){
+    if (w.key) btn(c, w, w.key===' '?'space':w.key, {hover:hov(w.id), font:'28px', radius:10});
+    else if (w.id==='k_back')  btn(c, w, 'del',   {hover:hov(w.id), font:'26px', radius:10});
+    else if (w.id==='k_clear') btn(c, w, 'clear', {hover:hov(w.id), font:'26px', radius:10});
+  }
+  const start = libPage*LIB_PER;
+  for (let i=0;i<LIB_PER;i++){
+    const w = LIBW.find(x=>x.id==='cell_'+i), item = libFiltered[start+i];
+    if (!item){ c.fillStyle='#141418'; rr(c,w.x,w.y,w.w,w.h,14); c.fill(); continue; }
+    const cur = item.id === vidId;
+    c.fillStyle = hov(w.id) ? '#2b2b34' : '#1b1b21';
+    rr(c,w.x,w.y,w.w,w.h,14); c.fill();
+    if (hov(w.id) || cur){ c.strokeStyle = cur ? C.accent2 : C.accent; c.lineWidth=4; c.stroke(); }
+    const im = thumbOf(item.id);
+    if (im.complete && im.naturalWidth){
+      c.save(); rr(c, w.x+8, w.y+8, w.w-16, w.h-84, 10); c.clip();
+      const th = w.h-84, tw = w.w-16;
+      const s = Math.max(tw/im.naturalWidth, th/im.naturalHeight);
+      c.drawImage(im, w.x+8 + (tw - im.naturalWidth*s)/2, w.y+8 + (th - im.naturalHeight*s)/2,
+                  im.naturalWidth*s, im.naturalHeight*s);
+      c.restore();
     }
-  } catch(e){ voiceStatus = 'voice failed: ' + (e.message||e); }
-  voiceBusy = false; needDraw = true;
+    c.fillStyle = cur ? C.accent : C.txt; c.font='25px system-ui';
+    let t = item.title; if (t.length>30) t = t.slice(0,29)+'…';
+    c.fillText(t, w.x+14, w.y+w.h-38);
+    c.fillStyle = C.dim; c.font='22px system-ui';
+    c.fillText(fmt(item.videoLength||0), w.x+14, w.y+w.h-12);
+  }
+  const pages = Math.max(1, Math.ceil(libFiltered.length/LIB_PER));
+  btn(c, LIBW.find(w=>w.id==='pg_prev'), 'prev', {hover:hov('pg_prev'), font:'26px'});
+  btn(c, LIBW.find(w=>w.id==='pg_next'), 'next', {hover:hov('pg_next'), font:'26px'});
+  c.fillStyle=C.dim; c.font='28px system-ui';
+  c.fillText(`page ${libPage+1} / ${pages}`, 420, 1182);
+  p.tex.needsUpdate = true;
 }
 
-// ---------- laser pointers ----------
+/* ============================ advanced panel ============================ */
+const ADV_CW = 1200;
+const ADV_ROWS = [
+  {id:'sim',  label:'key strength', min:0, max:0.35, get:()=>keyState.similarity, set:v=>{keyState.similarity=v; applyKey();}, f:v=>v.toFixed(2)},
+  {id:'smo',  label:'softness',     min:0, max:0.25, get:()=>keyState.smoothness, set:v=>{keyState.smoothness=v; applyKey();}, f:v=>v.toFixed(2)},
+  {id:'yaw',  label:'yaw',    min:-180,max:180, get:()=>deg(yaw),   set:v=>{yaw=rad(v); applyTransform();},  f:v=>v.toFixed(0)+'°'},
+  {id:'pit',  label:'pitch',  min:-75, max:75,  get:()=>deg(pitch), set:v=>{pitch=rad(v); applyTransform();},f:v=>v.toFixed(0)+'°'},
+  {id:'hgt',  label:'height', min:-1.5,max:1.5, get:()=>posY, set:v=>{posY=v; applyTransform();}, f:v=>v.toFixed(2)},
+  {id:'zoom', label:'zoom',   min:0.3, max:3,   get:()=>scl,  set:v=>{scl=v;  applyTransform();}, f:v=>v.toFixed(2)},
+  {id:'dst',  label:'distance',min:-3,max:3,    get:()=>dist, set:v=>{dist=v; applyTransform();}, f:v=>v.toFixed(2)},
+  {id:'uisz', label:'UI size', min:0.7,max:1.5, get:()=>UI.scale, set:v=>{UI.scale=v;
+       localStorage.setItem('uiScale', v); rebuildUI();}, f:v=>v.toFixed(2)+'×'},
+];
+const ADVW = [];
+{
+  ADVW.push({id:'keyblack', type:'btn', x:300, y:34, w:190, h:66});
+  ADVW.push({id:'keygreen', type:'btn', x:504, y:34, w:190, h:66});
+  ADVW.push({id:'reset',    type:'btn', x:730, y:34, w:170, h:66});
+  ADVW.push({id:'save',     type:'btn', x:914, y:34, w:170, h:66});
+  ADV_ROWS.forEach((r,i)=>ADVW.push({id:r.id, type:'slider', row:r,
+    x:300, y:140+i*92, w:600, h:64,
+    get:()=>(r.get()-r.min)/(r.max-r.min), set:v=>r.set(r.min+v*(r.max-r.min))}));
+}
+function drawAdv(p){
+  const c=p.ctx, W=p.cv.width, H=p.cv.height;
+  panelBG(c,W,H);
+  const hov=id=>p.hover===id;
+  c.fillStyle=C.txt; c.font='32px system-ui'; c.fillText('advanced', 60, 76);
+  btn(c, ADVW[0], 'black key', {on:keyState.color==='#000000', hover:hov('keyblack'), font:'26px'});
+  btn(c, ADVW[1], 'green key', {on:keyState.color==='#00ff00', hover:hov('keygreen'), font:'26px'});
+  btn(c, ADVW[2], 'reset', {hover:hov('reset'), font:'26px'});
+  btn(c, ADVW[3], 'save',  {hover:hov('save'),  font:'26px'});
+  for (const w of ADVW){
+    if (w.type!=='slider') continue;
+    slider(c, w, w.get(), {hover:hov(w.id), label:w.row.label, value:w.row.f(w.row.get())});
+  }
+  p.tex.needsUpdate = true;
+}
+
+/* ============================ voice ============================ */
+const replyAudio = new Audio();
+let micStream=null, micRec=null, micChunks=[], voiceBusy=false;
+let listening=false, vadCtx=null, vadAnalyser=null, vadData=null;
+let vadSpeaking=false, vadQuiet=0, vadArmed=false;
+let voiceStatus='', voiceReply='';
+let playQueue=[], playing=false;
+
+const VAD = {on:0.030, off:0.018, hangMs:850, minMs:350};
+let speechStart=0;
+
+function duck(on){ if (video) video.volume = videoVol * (on ? 0.25 : 1); }
+
+function enqueue(b64, text){ playQueue.push({b64,text}); if (!playing) playNext(); }
+function playNext(){
+  const it = playQueue.shift();
+  if (!it){ playing=false; duck(false); voiceStatus = listening ? 'listening…' : '';
+            vadArmed = listening; needDraw=true; return; }
+  playing=true; duck(true);
+  voiceReply = it.text; voiceStatus=''; needDraw=true;
+  replyAudio.volume = chatVol;
+  replyAudio.src = 'data:audio/wav;base64,' + it.b64;
+  replyAudio.onended = playNext; replyAudio.onerror = playNext;
+  replyAudio.play().catch(()=>{ voiceStatus='tap 🎤 to allow audio'; playing=false; duck(false); needDraw=true; });
+}
+async function ensureMic(){
+  if (micStream) return micStream;
+  micStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true}});
+  vadCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const src = vadCtx.createMediaStreamSource(micStream);
+  vadAnalyser = vadCtx.createAnalyser();
+  vadAnalyser.fftSize = 1024;
+  src.connect(vadAnalyser);
+  vadData = new Float32Array(vadAnalyser.fftSize);
+  return micStream;
+}
+function recStart(){
+  micChunks=[];
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+             : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+  micRec = mime ? new MediaRecorder(micStream,{mimeType:mime}) : new MediaRecorder(micStream);
+  micRec.ondataavailable = e => { if (e.data.size) micChunks.push(e.data); };
+  micRec.onstop = sendVoice;
+  micRec.start();
+}
+function recStop(){ try { micRec && micRec.state!=='inactive' && micRec.stop(); } catch(e){} }
+
+async function toggleListen(){
+  if (listening){
+    listening=false; vadArmed=false; vadSpeaking=false;
+    recStop(); voiceStatus=''; needDraw=true; return;
+  }
+  try {
+    await ensureMic();
+    if (vadCtx.state === 'suspended') await vadCtx.resume();
+    listening=true; vadArmed=true; vadSpeaking=false;
+    voiceStatus='listening…'; needDraw=true;
+  } catch(e){ voiceStatus = 'mic blocked: ' + (e.message||e); needDraw=true; }
+}
+function pollVAD(){
+  if (!listening || !vadAnalyser) return;
+  // barge-in: talking while she speaks cancels playback
+  vadAnalyser.getFloatTimeDomainData(vadData);
+  let sum=0; for (let i=0;i<vadData.length;i++) sum += vadData[i]*vadData[i];
+  const rms = Math.sqrt(sum/vadData.length);
+  const now = performance.now();
+  if (!vadArmed){
+    if (playing && rms > VAD.on*1.6){          // barge-in
+      playQueue=[]; try{ replyAudio.pause(); }catch(e){}
+      playing=false; duck(false); vadArmed=true;
+    } else return;
+  }
+  if (voiceBusy) return;
+  if (!vadSpeaking){
+    if (rms > VAD.on){ vadSpeaking=true; speechStart=now; vadQuiet=0;
+      recStart(); voiceStatus='listening…'; needDraw=true; }
+  } else {
+    if (rms < VAD.off){
+      if (!vadQuiet) vadQuiet = now;
+      else if (now - vadQuiet > VAD.hangMs){
+        vadSpeaking=false;
+        if (now - speechStart < VAD.minMs){ micChunks=[]; recStop(); }
+        else { vadArmed=false; recStop(); }
+      }
+    } else vadQuiet = 0;
+  }
+}
+async function sendVoice(){
+  const blob = new Blob(micChunks, {type:(micRec && micRec.mimeType)||'audio/webm'});
+  micChunks=[];
+  if (blob.size < 2500){ vadArmed = listening; voiceStatus = listening?'listening…':''; needDraw=true; return; }
+  voiceBusy=true; voiceStatus='thinking…'; needDraw=true;
+  playQueue=[]; playing=false;
+  try {
+    const r = await fetch('/voice/talk?sid='+SID, {method:'POST', body:blob,
+      headers:{'Content-Type': blob.type||'audio/webm'}});
+    const j = await r.json();
+    if (!j.audio){ voiceStatus = j.error ? ('error: '+j.error) : (j.note||'nothing heard'); }
+    else {
+      voiceStatus='';
+      enqueue(j.audio, j.reply||'');
+      if (j.more && j.job) (async()=>{
+        for (let n=1;n<32;n++){
+          try {
+            const cj = await (await fetch(`/voice/chunk?job=${j.job}&n=${n}`)).json();
+            if (!cj.audio) break;
+            enqueue(cj.audio, cj.text||'');
+            if (!cj.more) break;
+          } catch(e){ break; }
+        }
+      })();
+    }
+  } catch(e){ voiceStatus='voice failed: '+(e.message||e); }
+  voiceBusy=false;
+  if (listening && !playing) vadArmed = true;
+  needDraw=true;
+}
+async function saveSidecar(){
+  const body = {chroma:{color:keyState.color, similarity:keyState.similarity, smoothness:keyState.smoothness}};
+  const r = await fetch('/sidecar/'+vidId, {method:'POST', body:JSON.stringify(body)});
+  saveNote = r.ok ? 'saved' : 'save failed'; noteUntil = performance.now()+2500; needDraw=true;
+}
+
+/* ============================ lasers + hit test ============================ */
+const raycaster = new THREE.Raycaster();
+const tmpM = new THREE.Matrix4();
+let lasers = {}, ctrls = {};
 function makeLaser(){
-  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,-3)]);
-  const line = new THREE.Line(g, new THREE.LineBasicMaterial({color:0x2a6df4, transparent:true, opacity:0.7}));
-  line.renderOrder = 9;
-  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.008),
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,0,-1)]);
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color:0xffffff, transparent:true, opacity:0.35, depthTest:false}));
+  line.renderOrder = 20;
+  // ring cursor sits flush on the panel at the collision point
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.006, 0.011, 24),
+    new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.95,
+      depthTest:false, side:THREE.DoubleSide}));
+  ring.renderOrder = 21; ring.visible = false;
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.0035, 20),
     new THREE.MeshBasicMaterial({color:0xffffff, depthTest:false}));
-  dot.visible=false; dot.renderOrder=12;
-  return {line, dot};
+  dot.renderOrder = 22; dot.visible = false;
+  return {line, ring, dot};
+}
+function activePanels(){
+  const out = [];
+  if (!menuOn) return out;
+  if (screenMode === 'browse') out.push(panels.browse);
+  else {
+    out.push(panels.bar);
+    if (panels.adv.holder.visible) out.push(panels.adv);
+  }
+  return out.filter(Boolean);
 }
 function rayFrom(ctrl){
   tmpM.identity().extractRotation(ctrl.matrixWorld);
@@ -506,72 +565,77 @@ function rayFrom(ctrl){
   return raycaster;
 }
 function hitUI(ctrl){
-  if (!menuOn) return null;
-  const targets = [mainMesh];
-  if (popOn) targets.push(popMesh);
-  if (libOn) targets.push(libMesh);
-  const hits = rayFrom(ctrl).intersectObjects(targets, false);
+  const ps = activePanels();
+  if (!ps.length) return null;
+  const hits = rayFrom(ctrl).intersectObjects(ps.map(p=>p.mesh), false);
   if (!hits.length) return null;
   const h = hits[0];
-  const ud = h.object.userData;
-  const cx = h.uv.x * ud.ctxW, cy = (1-h.uv.y) * ud.ctxH;
+  const p = ps.find(x => x.mesh === h.object);
+  const cx = h.uv.x * p.cv.width, cy = (1-h.uv.y) * p.cv.height;
   let widget = null;
-  for (const wd of ud.widgets){
-    if (cx>=wd.x-14 && cx<=wd.x+wd.w+14 && cy>=wd.y-14 && cy<=wd.y+wd.h+14){ widget=wd; break; }
+  for (const w of p.widgets){
+    if (cx>=w.x-10 && cx<=w.x+w.w+10 && cy>=w.y-10 && cy<=w.y+w.h+10){ widget=w; break; }
   }
-  return {mesh:h.object, point:h.point, distance:h.distance, cx, cy, widget, ud};
+  return {panel:p, widget, cx, cy, point:h.point, normal:h.face && h.face.normal, distance:h.distance};
 }
-function widgetClick(wd){
+
+/* ============================ actions ============================ */
+function widgetClick(p, w){
   needDraw = true;
-  if (wd.key !== undefined){ libQuery += wd.key; libApply(); return; }
-  if (wd.row !== undefined){
-    const item = libFiltered[libPage*LIB_ROWS + wd.row];
-    if (item) switchVideo(item.id);
+  if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
+  if (w.cell !== undefined){
+    const item = libFiltered[libPage*LIB_PER + w.cell];
+    if (item) playVideo(item.id);            // straight to playback, no detail page
     return;
   }
-  switch(wd.id){
+  switch(w.id){
     case 'play': video && (video.paused? video.play() : video.pause()); break;
-    case 'lib': libOn = !libOn; libMesh.visible = libOn; if (libOn) libApply(); break;
-    case 'mic': micOn ? micStop() : micStart(); break;
+    case 'back': screenMode='browse'; syncScreens(); break;
+    case 'close': screenMode='bar'; syncScreens(); break;
+    case 'lib':  screenMode='browse'; syncScreens(); break;
+    case 'mic':  toggleListen(); break;
+    case 'gear': panels.adv.holder.visible = !panels.adv.holder.visible; break;
+    case 'adv':  advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0'); break;
     case 'k_back': libQuery = libQuery.slice(0,-1); libApply(); break;
-    case 'k_clear': libQuery = ''; libApply(); break;
+    case 'k_clear': libQuery=''; libApply(); break;
     case 'pg_prev': libPage = Math.max(0, libPage-1); break;
-    case 'pg_next': libPage = Math.min(Math.max(0,Math.ceil(libFiltered.length/LIB_ROWS)-1), libPage+1); break;
-    case 'lib_close': libOn = false; libMesh.visible = false; break;
-    case 'gear': popOn = !popOn; popMesh.visible = popOn; break;
-    case 'adv': advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0'); break;
-    case 'keyblack': $('keycol').value = '#000000'; applyKey(); break;
-    case 'keygreen': $('keycol').value = '#00ff00'; applyKey(); break;
-    case 'reset': yaw=0; pitch=0; posY=0; dist=0; scl=1; applyTransform(); break;
+    case 'pg_next': libPage = Math.min(Math.max(0,Math.ceil(libFiltered.length/LIB_PER)-1), libPage+1); break;
+    case 'keyblack': keyState.color='#000000'; applyKey(); break;
+    case 'keygreen': keyState.color='#00ff00'; applyKey(); break;
+    case 'reset': yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform(); break;
     case 'save': saveSidecar(); break;
   }
 }
-
-async function switchVideo(id){
-  // swap the source in place: rebuild the mesh only if the projection changed
+function syncScreens(){
+  panelVisible('bar', screenMode==='bar');
+  panelVisible('browse', screenMode==='browse');
+  if (screenMode==='browse') panels.adv.holder.visible = false;
+  needDraw = true;
+}
+async function playVideo(id){
   const prev = detail;
   vidId = id;
   detail = await (await fetch('/video/'+id)).json();
   const ch = detail.chroma || {};
-  $('keycol').value = ch.color || '#000000';
-  $('sim').value = ch.similarity ?? 0.10;
-  $('smo').value = ch.smoothness ?? 0.08;
+  keyState.color = ch.color || '#000000';
+  keyState.similarity = ch.similarity ?? 0.10;
+  keyState.smoothness = ch.smoothness ?? 0.08;
   video.src = detail.encodings[0].videoSources[0].url;
+  video.volume = videoVol;
   video.play().catch(()=>{});
-  const changed = !prev || prev.screenType !== detail.screenType
-        || prev.stereoMode !== detail.stereoMode || prev.alphaPack !== detail.alphaPack;
+  const changed = !prev || prev.screenType!==detail.screenType
+    || prev.stereoMode!==detail.stereoMode || prev.alphaPack!==detail.alphaPack;
   if (changed) rebuildScreen();
   applyKey();
-  libOn = false; libMesh.visible = false;
-  needDraw = true;
+  screenMode='bar'; syncScreens();
 }
 function rebuildScreen(){
   if (!group) return;
   const tex = mats[0] && mats[0].uniforms.map.value;
-  for (const child of group.children.slice()){ group.remove(child); child.geometry.dispose && child.geometry.dispose(); }
+  for (const ch of group.children.slice()) group.remove(ch);
   mats = [];
   const st = detail.screenType || 'fisheye190';
-  const sbs = (detail.stereoMode || 'sbs') === 'sbs';
+  const sbs = (detail.stereoMode||'sbs')==='sbs';
   const matteTB = detail.alphaPack === 'tb';
   const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
   if (sbs && detail.is3d !== false){
@@ -586,245 +650,258 @@ function rebuildScreen(){
   }
 }
 
-// ---------- trigger handling (select events) ----------
+/* ============================ UI build / rebuild ============================ */
+function buildUI(){
+  uiRoot = new THREE.Group();
+  uiRoot.rotation.order = 'YXZ';
+  makePanel('bar',    {dist:UI.barDist, wDeg:UI.barWdeg, hDeg:UI.barHdeg, pitch:UI.barPitch,
+                       cw:BAR_W, widgets:BAR, draw:drawBar, order:10});
+  makePanel('browse', {dist:UI.libDist, wDeg:UI.libWdeg, hDeg:UI.libHdeg, pitch:UI.libPitch,
+                       cw:LIB_CW, widgets:LIBW, draw:drawBrowse, order:10});
+  makePanel('adv',    {dist:UI.advDist, wDeg:UI.advWdeg, hDeg:UI.advHdeg, pitch:UI.advPitch,
+                       cw:ADV_CW, widgets:ADVW, draw:drawAdv, order:12});
+  panels.adv.holder.rotation.y = rad(26);       // sits to the right of the bar
+  panels.adv.holder.visible = false;
+  for (const k in panels) uiRoot.add(panels[k].holder);
+  scene.add(uiRoot);
+  syncScreens();
+}
+function rebuildUI(){
+  if (!uiRoot) return;
+  const advVis = panels.adv.holder.visible;
+  const yawKeep = uiRoot.rotation.y, posKeep = uiRoot.position.clone();
+  scene.remove(uiRoot);
+  panels = {};
+  buildUI();
+  uiRoot.rotation.y = yawKeep; uiRoot.position.copy(posKeep);
+  panels.adv.holder.visible = advVis;
+  needDraw = true;
+}
+function anchorUI(){
+  if (!uiRoot || !xrCam) return;
+  const p = new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld);
+  uiRoot.position.copy(p);
+  const e = new THREE.Euler().setFromRotationMatrix(xrCam.matrixWorld, 'YXZ');
+  uiRoot.rotation.y = e.y;
+}
+
+/* ============================ input ============================ */
+let triggerDown={}, drag=null, aiming=null;
 function onSelectStart(hand, ctrl){
   const hit = hitUI(ctrl);
-  triggerDown[hand] = {t: performance.now(), overUI: !!hit};
-  // left trigger away from the menu = push-to-talk, in both vanilla and ADV
-  if (hand === 'left' && !hit){ micStart(); return; }
+  triggerDown[hand] = {t:performance.now(), overUI:!!hit};
   if (hit){
-    if (hit.widget && hit.widget.type==='slider'){
-      drag = {hand, widget:hit.widget, mesh:hit.mesh};
-      dragTo(hit);
-    } else if (hit.widget){
-      widgetClick(hit.widget);
-    }
+    if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
+    else if (hit.widget) widgetClick(hit.panel, hit.widget);
   }
 }
-function onSelectEnd(hand, ctrl){
+function onSelectEnd(hand){
   const td = triggerDown[hand]; triggerDown[hand]=null;
-  if (hand === 'left' && micOn){ micStop(); return; }
   if (drag && drag.hand===hand){ drag=null; return; }
-  if (moveMenu && moveMenu.hand===hand){ moveMenu=null; return; }
-  if (td && !td.overUI && hand==='right'){
-    if (performance.now()-td.t < 350){ menuOn = !menuOn; panelGroup.visible = menuOn; needDraw = true; }
+  if (aiming && aiming.hand===hand){ aiming=null; return; }
+  if (td && !td.overUI && performance.now()-td.t < 320){
+    menuOn = !menuOn;
+    if (menuOn) anchorUI();
+    needDraw = true;
   }
 }
 function dragTo(hit){
   if (!drag) return;
-  const wd = drag.widget;
-  const v = clamp((hit.cx - wd.x)/wd.w, 0, 1);
-  wd.set(v);
+  drag.w.set(clamp((hit.cx - drag.w.x)/drag.w.w, 0, 1));
   needDraw = true;
 }
-function updateTriggers(ctrls){
-  // hold-away-from-menu (right hand) => move the menu to where the ray points
-  const td = triggerDown['right'];
-  if (td && !td.overUI && !drag && !moveMenu && performance.now()-td.t >= 350){
-    moveMenu = {hand:'right'};
-    if (!menuOn){ menuOn = true; panelGroup.visible = true; }
-  }
-  if (moveMenu){
-    const ctrl = ctrls['right'];
-    if (ctrl){
-      const rc = rayFrom(ctrl);
-      const p = new THREE.Vector3().copy(rc.ray.direction).multiplyScalar(1.1).add(rc.ray.origin);
-      panelGroup.position.copy(p);
-      if (xrCam){ panelGroup.lookAt(xrCam.position); }
-      needDraw = true;
-    }
-  }
-  if (drag){
-    const ctrl = ctrls[drag.hand];
-    if (ctrl){
-      const hits = rayFrom(ctrl).intersectObject(drag.mesh, false);
-      if (hits.length){
-        const ud = drag.mesh.userData;
-        dragTo({cx: hits[0].uv.x*ud.ctxW, cy:(1-hits[0].uv.y)*ud.ctxH});
+function updatePointers(){
+  for (const hand of ['left','right']){
+    const l = lasers[hand], c = ctrls[hand];
+    if (!l || !c) continue;
+    const show = menuOn;
+    l.line.visible = show;
+    if (!show){ l.ring.visible=false; l.dot.visible=false; continue; }
+    const hit = hitUI(c);
+    const p = panels && hit ? hit.panel : null;
+    // hover state
+    for (const k in panels){
+      const want = (p===panels[k]) ? (hit.widget ? hit.widget.id : null) : null;
+      if (panels[k].hover !== want && (p===panels[k] || panels[k].hover!==null)){
+        panels[k].hover = want; needDraw = true;
       }
     }
+    if (hit){
+      const d = hit.distance;
+      l.line.scale.z = d;
+      l.line.material.opacity = 0.75;
+      l.ring.visible = true; l.dot.visible = true;
+      l.ring.position.copy(hit.point); l.dot.position.copy(hit.point);
+      // lie flat on the panel surface
+      const n = hit.point.clone().sub(new THREE.Vector3().setFromMatrixPosition(hit.panel.mesh.matrixWorld));
+      l.ring.lookAt(new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld));
+      l.dot.lookAt(new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld));
+    } else {
+      l.line.scale.z = 2.2;
+      l.line.material.opacity = 0.28;
+      l.ring.visible = false; l.dot.visible = false;
+    }
+  }
+  // hold trigger away from UI = re-aim the menu
+  for (const hand of ['left','right']){
+    const td = triggerDown[hand];
+    if (td && !td.overUI && !drag && !aiming && performance.now()-td.t >= 320){
+      aiming = {hand};
+      if (!menuOn){ menuOn = true; needDraw = true; }
+    }
+  }
+  if (aiming && ctrls[aiming.hand] && uiRoot && xrCam){
+    const rc = rayFrom(ctrls[aiming.hand]);
+    const camPos = new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld);
+    uiRoot.position.copy(camPos);
+    const dir = rc.ray.direction.clone();
+    uiRoot.rotation.y = Math.atan2(-dir.x, -dir.z);
+    needDraw = true;
+  }
+  if (drag && ctrls[drag.hand]){
+    const hits = rayFrom(ctrls[drag.hand]).intersectObject(drag.panel.mesh, false);
+    if (hits.length) dragTo({cx: hits[0].uv.x*drag.panel.cv.width});
   }
 }
-
-// ---------- gamepad gestures (ADV mode) ----------
-function pollInput(dt, frame){
+function pollGamepads(dt, frame){
   if (!session) return;
   for (const src of session.inputSources){
     const gp = src.gamepad; if (!gp) continue;
     const hand = src.handedness; if (hand!=='left' && hand!=='right') continue;
-    const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0]||0, gp.axes[1]||0];
-    const dead = v => Math.abs(v) < 0.15 ? 0 : v;
-    const sx = dead(ax[0]), sy = dead(ax[1]);
-    const prev = prevBtn[hand];
-    const pressed = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
-    const edge = i => { const now = pressed(i), was = !!prev[i]; prev[i] = now; return now && !was; };
-    const grip = pressed(1);
-
-    if (hand === 'right'){
-      if (edge(4)) { video && (video.paused ? video.play() : video.pause()); needDraw=true; } // A
-      if (edge(5)) session.end();                                                             // B
-      if (edge(3)) saveSidecar();                                                             // stick click
+    const ax = gp.axes.length>=4 ? [gp.axes[2],gp.axes[3]] : [gp.axes[0]||0, gp.axes[1]||0];
+    const dead = v => Math.abs(v)<0.15?0:v;
+    const sx=dead(ax[0]), sy=dead(ax[1]);
+    const prev=prevBtn[hand];
+    const pressed=i=>!!(gp.buttons[i]&&gp.buttons[i].pressed);
+    const edge=i=>{const n=pressed(i),w=!!prev[i];prev[i]=n;return n&&!w;};
+    const grip=pressed(1);
+    if (hand==='right'){
+      if (edge(4)){ video && (video.paused?video.play():video.pause()); needDraw=true; }
+      if (edge(5)) session.end();
+      if (edge(3)){ menuOn=!menuOn; if(menuOn) anchorUI(); needDraw=true; }
       if (advMode){
         if (grip && src.gripSpace && frame){
           const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
           if (pose){
-            const o = pose.transform.orientation, p = pose.transform.position;
-            const q = new THREE.Quaternion(o.x, o.y, o.z, o.w);
-            const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(q);
-            const yawC = Math.atan2(-fwd.x, -fwd.z);
-            const pitchC = Math.asin(clamp(fwd.y, -1, 1));
-            if (!grab) grab = {yawC, pitchC, py:p.y, yaw0:yaw, pitch0:pitch, posY0:posY};
-            yaw = grab.yaw0 - angDelta(yawC, grab.yawC);          // inverted
-            pitch = clamp(grab.pitch0 - (pitchC - grab.pitchC), -1.3, 1.3); // inverted
-            posY = grab.posY0 + (p.y - grab.py) * 1.5;
+            const o=pose.transform.orientation, pp=pose.transform.position;
+            const q=new THREE.Quaternion(o.x,o.y,o.z,o.w);
+            const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(q);
+            const yawC=Math.atan2(-fwd.x,-fwd.z), pitchC=Math.asin(clamp(fwd.y,-1,1));
+            if (!grab) grab={yawC,pitchC,py:pp.y,yaw0:yaw,pitch0:pitch,posY0:posY};
+            let d=yawC-grab.yawC; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI;
+            yaw = grab.yaw0 - d;
+            pitch = clamp(grab.pitch0 - (pitchC-grab.pitchC), -1.3, 1.3);
+            posY = grab.posY0 + (pp.y-grab.py)*1.5;
+            applyTransform();
           }
-          if (sy) scl = clamp(scl * (1 - sy*dt*0.8), 0.3, 3);
-        } else grab = null;
-      } else grab = null;
+          if (sy){ scl=clamp(scl*(1-sy*dt*0.8),0.3,3); applyTransform(); }
+        } else grab=null;
+      } else grab=null;
     } else {
-      if (edge(3)){ menuOn = !menuOn; panelGroup.visible = menuOn; needDraw=true; }           // stick click
       if (advMode){
-        if (sy){
-          if (grip) dist = clamp(dist - sy*dt*1.6, -3, 3);
-          else scl = clamp(scl * (1 - sy*dt*0.8), 0.3, 3);
+        if (sy){ if (grip) dist=clamp(dist-sy*dt*1.6,-3,3); else scl=clamp(scl*(1-sy*dt*0.8),0.3,3); applyTransform(); }
+        if (sx && performance.now()>seekCool && Math.abs(sx)>0.6 && video && video.duration){
+          video.currentTime = clamp(video.currentTime+(sx>0?10:-10),0,video.duration);
+          seekCool = performance.now()+400; needDraw=true;
         }
-        if (sx && performance.now() > seekCool && Math.abs(sx) > 0.6 && video && video.duration){
-          video.currentTime = clamp(video.currentTime + (sx>0?10:-10), 0, video.duration);
-          seekCool = performance.now() + 400; needDraw=true;
-        }
-        if (edge(4)){
-          const id = grip ? 'smo' : 'sim';
-          const el = $(id); const max = grip? 0.25 : 0.35;
-          let v = parseFloat(el.value) + 0.02; if (v > max) v = 0.02;
-          el.value = v; applyKey(); needDraw=true;
-        }
-        if (edge(5)){ yaw=0; pitch=0; posY=0; dist=0; scl=1; applyTransform(); needDraw=true; }
+        if (edge(5)){ yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform(); needDraw=true; }
       }
+      if (edge(4)) toggleListen();
     }
   }
-  applyTransform();
 }
 
-// ---------- session ----------
-$('enter').onclick = async () => {
+/* ============================ session ============================ */
+async function enter(id){
   $('err').textContent='';
-  try { await start(); }
+  try { await start(id); }
   catch(e){ $('err').textContent = 'failed: ' + (e.message||e); cleanup(); }
-};
+}
+async function start(id){
+  if (!navigator.xr) throw new Error('WebXR unavailable — open the https URL');
+  // mic permission must be granted here: the prompt is 2D and cannot be shown in-session
+  try { await ensureMic(); } catch(e){ voiceStatus = 'mic not allowed'; }
 
-async function start(){
-  if (!navigator.xr) throw new Error('WebXR unavailable (needs the https URL)');
-  // Ask for the mic BEFORE entering XR: the permission prompt is 2D browser UI
-  // and cannot be shown or tapped from inside an immersive session.
-  if (!micStream && navigator.mediaDevices){
-    try { micStream = await navigator.mediaDevices.getUserMedia({audio:true}); }
-    catch(e){ voiceStatus = 'mic not allowed — voice disabled'; }
-  }
-  const url = detail.encodings[0].videoSources[0].url;
+  vidId = id;
+  detail = await (await fetch('/video/'+id)).json();
+  const ch = detail.chroma || {};
+  keyState.color = ch.color || '#000000';
+  keyState.similarity = ch.similarity ?? 0.10;
+  keyState.smoothness = ch.smoothness ?? 0.08;
+
   video = document.createElement('video');
-  video.src = url; video.loop = true; video.playsInline = true;
+  video.src = detail.encodings[0].videoSources[0].url;
+  video.loop = true; video.playsInline = true; video.volume = videoVol;
   await video.play();
+  replyAudio.volume = chatVol;
+  try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
+        replyAudio.pause(); replyAudio.muted=false; } catch(e){}
 
   renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
-  renderer.setPixelRatio(1);
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.xr.enabled = true;
-  renderer.domElement.className = 'gl';
+  renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
+  renderer.xr.enabled = true; renderer.domElement.className='gl';
   document.body.appendChild(renderer.domElement);
   scene = new THREE.Scene();
-  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 100);
+  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.03, 100);
   cam.layers.enable(1);
 
   const tex = new THREE.VideoTexture(video);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.minFilter = THREE.LinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter;
+  group = new THREE.Group(); scene.add(group);
+  mats=[]; yaw=0;pitch=0;posY=0;dist=0;scl=1; grab=null;
+  rebuildScreen(); applyKey();
 
-  const st = detail.screenType || 'fisheye190';
-  const sbs = (detail.stereoMode || 'sbs') === 'sbs';
-  const matteTB = detail.alphaPack === 'tb';
-  const geo = FOV[st] ? fisheyeGeo(FOV[st]) : domeGeo(st==='sphere');
+  buildUI();
 
-  group = new THREE.Group();
-  mats = []; yaw=0; pitch=0; posY=0; dist=0; scl=1; grab=null;
-  if (sbs && detail.is3d !== false){
-    for (const eye of [0,1]){
-      const m = makeMat(tex); eyeUV(m, eye, true, matteTB);
-      const mesh = new THREE.Mesh(geo, m);
-      mesh.layers.set(eye+1);
-      group.add(mesh); mats.push(m);
-    }
-  } else {
-    const m = makeMat(tex); eyeUV(m, 0, false, matteTB);
-    group.add(new THREE.Mesh(geo, m)); mats.push(m);
-  }
-  scene.add(group);
-  scene.add(makeMenu());
-  menuOn = true; popOn = false; libOn = false;
-  popMesh.visible = false; libMesh.visible = false;
-  libApply();
-  applyKey();
-
-  // controllers + lasers
-  const ctrls = {};
   for (const i of [0,1]){
     const c = renderer.xr.getController(i);
     c.addEventListener('connected', e => {
       c.userData.hand = e.data.handedness;
       ctrls[e.data.handedness] = c;
       const l = makeLaser();
-      c.add(l.line); scene.add(l.dot);
+      c.add(l.line); scene.add(l.ring); scene.add(l.dot);
       lasers[e.data.handedness] = l;
     });
     c.addEventListener('disconnected', () => { if (c.userData.hand) delete ctrls[c.userData.hand]; });
     c.addEventListener('selectstart', () => c.userData.hand && onSelectStart(c.userData.hand, c));
-    c.addEventListener('selectend',   () => c.userData.hand && onSelectEnd(c.userData.hand, c));
+    c.addEventListener('selectend',   () => c.userData.hand && onSelectEnd(c.userData.hand));
     scene.add(c);
   }
-
-  // prime the audio element while we still have the Enter click's gesture
-  try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
-        replyAudio.pause(); replyAudio.muted = false; } catch(e){}
 
   session = await navigator.xr.requestSession('immersive-ar');
   session.addEventListener('end', cleanup);
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
+  $('lib').hidden = true;
 
-  let last = performance.now(), pTick = 0;
-  renderer.setAnimationLoop((time, frame) => {
-    const now = performance.now(), dt = Math.min(0.1, (now-last)/1000); last = now;
+  let last=performance.now(), tick=0, anchored=false;
+  renderer.setAnimationLoop((t, frame) => {
+    const now=performance.now(), dt=Math.min(0.1,(now-last)/1000); last=now;
     xrCam = renderer.xr.getCamera();
-    pollInput(dt, frame);
-    updateTriggers(ctrls);
-    // lasers + hover dots only while the menu is up
-    for (const hand of ['left','right']){
-      const l = lasers[hand], c = ctrls[hand];
-      if (!l || !c) continue;
-      l.line.visible = menuOn;
-      if (menuOn){
-        const hit = hitUI(c);
-        l.dot.visible = !!hit;
-        if (hit) l.dot.position.copy(hit.point);
-      } else l.dot.visible = false;
+    if (!anchored){ anchorUI(); anchored = true; }
+    pollGamepads(dt, frame);
+    pollVAD();
+    updatePointers();
+    if (menuOn && (needDraw || now > tick)){
+      for (const k in panels) if (panels[k].holder.visible) panels[k].draw(panels[k]);
+      needDraw=false; tick = now + 250;
     }
-    if (menuOn && (needDraw || now > pTick)){ drawMenus(); needDraw=false; pTick = now + 300; }
     renderer.render(scene, cam);
   });
 }
-
 function cleanup(){
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
   try{ session && session.end(); }catch(e){}
   try{ video && video.pause(); }catch(e){}
   try{ renderer && renderer.domElement.remove(); renderer.dispose(); }catch(e){}
-  session=null; renderer=null; video=null; mats=[]; group=null;
-  panelGroup=null; mainMesh=null; popMesh=null; libMesh=null;
-  mainCtx=null; popCtx=null; libCtx=null;
-  lasers={}; drag=null; moveMenu=null; triggerDown={}; grab=null; xrCam=null;
-  prevBtn.left={}; prevBtn.right={};
-  try{ micRec && micRec.state!=='inactive' && micRec.stop(); }catch(e){}
+  try{ recStop(); }catch(e){}
   try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
-  micStream=null; micRec=null; micOn=false; voiceBusy=false; libOn=false;
+  try{ vadCtx && vadCtx.close(); }catch(e){}
+  session=null; renderer=null; video=null; mats=[]; group=null; uiRoot=null;
+  panels={}; lasers={}; ctrls={}; drag=null; aiming=null; triggerDown={};
+  micStream=null; vadCtx=null; listening=false; playing=false; playQueue=[];
+  prevBtn.left={}; prevBtn.right={};
+  $('lib').hidden = false;
 }
 
 loadLib();
