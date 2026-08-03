@@ -305,6 +305,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.player_static(path)
             if path.startswith("/voice/"):
                 return self.voice_proxy(self.path, "GET")
+            if path == "/clientlog":
+                # the headset has no console; let the player report faults here
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                print("CLIENT: " + (q.get("m", [""])[0])[:800], flush=True)
+                return self.send_json({"ok": True})
             if path.startswith("/video/"):
                 return self.detail(path[len("/video/"):])
             if path.startswith("/thumb/"):

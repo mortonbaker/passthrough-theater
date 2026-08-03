@@ -97,6 +97,17 @@ let seekCool=0, grab=null;
 const SID = 'vr-' + Math.floor(Math.random()*1e9);
 const thumbs = {};                            // id -> Image
 
+// There is no console in the headset, so faults are shipped to the server log.
+const _seenErr = new Set();
+function report(tag, e){
+  const msg = tag + ': ' + (e && (e.stack || e.message || e) || e);
+  if (_seenErr.has(msg.slice(0,180))) return;
+  _seenErr.add(msg.slice(0,180));
+  try { fetch('/clientlog?m=' + encodeURIComponent(msg.slice(0,700))); } catch(_){}
+}
+window.addEventListener('error', ev => report('window.onerror', ev.error || ev.message));
+window.addEventListener('unhandledrejection', ev => report('unhandled', ev.reason));
+
 /* ============================ library ============================ */
 async function loadLib(){
   const j = await (await fetch('/deovr')).json();
@@ -589,9 +600,9 @@ function activePanels(){
   if (screenMode === 'browse') out.push(panels.browse);
   else {
     out.push(panels.bar);
-    if (panels.adv.holder.visible) out.push(panels.adv);
+    if (panels.adv && panels.adv.holder.visible) out.push(panels.adv);
   }
-  return out.filter(Boolean);
+  return out.filter(p => p && p.mesh);
 }
 function rayFrom(ctrl){
   tmpM.identity().extractRotation(ctrl.matrixWorld);
@@ -964,19 +975,26 @@ async function start(id, pre){
   $('stage').hidden = true; $('lib').hidden = true; pending = null;
 
   let last=performance.now(), tick=0, anchored=false;
+  // Each stage is isolated: a fault in input or UI drawing must not stop the
+  // scene rendering, or the session looks completely dead.
+  const guard = (tag, fn) => { try { fn(); } catch(e){ report(tag, e); } };
   renderer.setAnimationLoop((t, frame) => {
     const now=performance.now(), dt=Math.min(0.1,(now-last)/1000); last=now;
-    xrCam = renderer.xr.getCamera();
-    if (!anchored){ anchorUI(); anchored = true; }
-    pollGamepads(dt, frame);
-    pollVAD();
-    updatePointers();
+    try { xrCam = renderer.xr.getCamera(); } catch(e){ report('getCamera', e); }
+    if (!anchored){ guard('anchorUI', anchorUI); anchored = true; }
+    guard('pollGamepads', () => pollGamepads(dt, frame));
+    guard('pollVAD', pollVAD);
+    guard('updatePointers', updatePointers);
     if (menuOn && (needDraw || now > tick)){
-      for (const k in panels) if (panels[k].holder.visible) panels[k].draw(panels[k]);
+      guard('draw', () => {
+        for (const k in panels) if (panels[k] && panels[k].holder.visible) panels[k].draw(panels[k]);
+      });
       needDraw=false; tick = now + 250;
     }
-    renderer.render(scene, cam);
+    try { renderer.render(scene, cam); } catch(e){ report('render', e); }
   });
+  report('session-started', 'ok panels=' + Object.keys(panels).join(',')
+    + ' screen=' + (detail && detail.screenType) + ' mats=' + mats.length);
 }
 function cleanup(){
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
