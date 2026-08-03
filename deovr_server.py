@@ -392,6 +392,16 @@ class Handler(BaseHTTPRequestHandler):
         to the video, so every future play reads the same settings.
         """
         path = urllib.parse.urlparse(self.path).path
+        # sendBeacon always POSTs; a GET-only route silently 404s every report
+        if path == "/clientlog":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n).decode("utf-8", "replace") if 0 < n < 8192 else ""
+            except Exception:
+                body = ""
+            print("CLIENT: " + ((q.get("m", [""])[0] or body)[:800]), flush=True)
+            return self.send_json({"ok": True})
         if path.startswith("/voice/"):
             return self.voice_proxy(self.path)
         if not path.startswith("/sidecar/"):

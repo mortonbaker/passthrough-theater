@@ -942,15 +942,35 @@ async function start(id, pre){
 
   if (video){ try{ video.pause(); video.src=''; }catch(e){} }
   video = document.createElement('video');
-  video.src = detail.encodings[0].videoSources[0].url;
   video.loop = true; video.playsInline = true; video.volume = videoVol;
-  await video.play().catch(()=>{});
-  step('D video-playing ' + video.videoWidth + 'x' + video.videoHeight);
+  video.preload = 'metadata';
+  video.src = detail.encodings[0].videoSources[0].url;
+  // Load dimensions but do NOT start decoding yet: playback begins once the
+  // session and GL context are established, so the two never contend.
+  await new Promise(res => {
+    if (video.readyState >= 1) return res();
+    video.addEventListener('loadedmetadata', res, {once:true});
+    video.addEventListener('error', res, {once:true});
+    setTimeout(res, 8000);
+  });
+  step('D metadata ' + video.videoWidth + 'x' + video.videoHeight);
   replyAudio.volume = chatVol;
   try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
         replyAudio.pause(); replyAudio.muted=false; } catch(e){}
 
-  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  // Create the context XR-compatible up front. Letting three.js call
+  // makeXRCompatible() afterwards migrates the context to the XR device, and
+  // doing that with MSAA plus a 4K video texture already live crashed the tab.
+  const glCanvas = document.createElement('canvas');
+  const gl = glCanvas.getContext('webgl2', {
+    xrCompatible:true, alpha:true, antialias:false,
+    depth:true, stencil:false, powerPreference:'high-performance',
+    preserveDrawingBuffer:false, desynchronized:false});
+  if (!gl) throw new Error('no webgl2 context');
+  glCanvas.addEventListener('webglcontextlost', e => {
+    e.preventDefault(); beacon('WEBGL CONTEXT LOST'); }, false);
+  renderer = new THREE.WebGLRenderer({canvas:glCanvas, context:gl,
+    alpha:true, antialias:false});
   renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
   renderer.xr.enabled = true; renderer.domElement.className='gl';
   document.body.appendChild(renderer.domElement);
@@ -990,6 +1010,8 @@ async function start(id, pre){
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
   step('I setSession-ok');
+  await video.play().catch(e => report('video.play', e));
+  step('I2 playing');
   $('stage').hidden = true; $('lib').hidden = true; pending = null;
 
   let last=performance.now(), tick=0, anchored=false;
