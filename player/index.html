@@ -852,27 +852,28 @@ function pollGamepads(dt, frame){
 // sees a live user gesture, and awaiting the mic prompt / metadata fetch first
 // consumes it -- which silently dropped the session and left the audio running.
 // So: prepare here, then let the Enter VR click own the session request.
-let starting = false, pending = null;
+let starting = false, pending = null, selectedId = null;
 async function select(id){
   if (starting || session) return;
+  // Set this synchronously. Enter VR only needs the id; metadata is a bonus,
+  // and start() can fetch it itself once the session is already secured.
+  selectedId = id; pending = null;
   $('err').textContent = ''; $('err2').textContent = '';
   const item = library.find(v => v.id === id) || {};
   $('sthumb').src = '/thumb/'+id+'.jpg';
   $('stitle').textContent = item.title || '';
-  $('smeta').textContent = 'preparing…';
+  $('smeta').textContent = 'ready — tap Enter VR';
   $('stage').hidden = false;
+  diag();
+  // permission prompt must happen out here: it cannot be shown once immersed
+  ensureMic().catch(() => { voiceStatus = 'mic not allowed'; });
   try {
     const d = await (await fetch('/video/'+id)).json();
-    // Set this BEFORE touching the mic: if the permission prompt is ignored it
-    // never settles, and gating on it left Enter VR doing nothing at all.
     pending = {id, detail:d};
     $('smeta').textContent = `${d.screenType} · ${d.stereoMode} · ${fmt(d.videoLength||0)}`
       + (d.voice ? ` · voice: ${d.voice}` : '');
-    diag();
-    // permission prompt must happen out here: it cannot be shown once immersed
-    ensureMic().catch(() => { voiceStatus = 'mic not allowed'; });
   } catch(e){
-    $('err2').textContent = 'could not load: ' + (e.message||e);
+    $('smeta').textContent = 'metadata unavailable — Enter VR will retry';
   }
 }
 async function diag(){
@@ -886,20 +887,20 @@ async function diag(){
   }
   $('sdiag').textContent = bits.join('  ·  ');
 }
-$('cancel').onclick = () => { pending = null; $('stage').hidden = true; };
 $('go').onclick = async () => {
   if (starting || session) return;
-  if (!pending){ $('err2').textContent = 'still loading — tap again in a moment'; return; }
-  starting = true; $('err2').textContent = 'starting…';
+  if (!selectedId){ $('err2').textContent = 'no video selected'; return; }
+  starting = true; $('err2').textContent = 'requesting session…';
   try {
-    await start(pending.id, pending.detail);
+    await start(selectedId, pending && pending.detail);
     $('err2').textContent = '';
   } catch(e){
-    $('err2').textContent = 'failed: ' + (e && (e.message||e.name) || e);
+    $('err2').textContent = 'failed: ' + (e && (e.name ? e.name+': ' : '') + (e.message||e) || e);
     cleanup();
   }
   starting = false;
 };
+$('cancel') && ($('cancel').onclick = () => { pending=null; selectedId=null; $('stage').hidden = true; });
 
 async function start(id, pre){
   if (!navigator.xr) throw new Error('WebXR unavailable — open the https URL');
@@ -988,7 +989,7 @@ function cleanup(){
   panels={}; lasers={}; ctrls={}; drag=null; aiming=null; triggerDown={};
   micStream=null; vadCtx=null; listening=false; playing=false; playQueue=[];
   prevBtn.left={}; prevBtn.right={};
-  starting=false; pending=null;
+  starting=false; pending=null; selectedId=null; videoTex=null;
   $('stage').hidden = true; $('lib').hidden = false;
 }
 
