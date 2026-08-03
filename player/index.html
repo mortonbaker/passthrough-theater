@@ -875,7 +875,32 @@ function pollGamepads(dt, frame){
 // consumes it -- which silently dropped the session and left the audio running.
 // So: prepare here, then let the Enter VR click own the session request.
 let starting = false, pending = null, selectedId = null;
-let frameCount = 0, hbTimer = null;
+let frameCount = 0, hbTimer = null, cam = null, glCanvas = null;
+
+// The renderer is built once at page load, never inside an entry attempt.
+// Creating a GL context while a session is granted but not yet attached
+// crashed the tab; every three.js XR example builds the renderer first.
+function initGL(){
+  if (renderer) return true;
+  try {
+    glCanvas = document.createElement('canvas');
+    const gl = glCanvas.getContext('webgl2', {
+      xrCompatible:true, alpha:true, antialias:false,
+      depth:true, stencil:false, powerPreference:'high-performance'});
+    if (!gl) throw new Error('no webgl2');
+    glCanvas.addEventListener('webglcontextlost',
+      e => { e.preventDefault(); beacon('WEBGL CONTEXT LOST'); }, false);
+    renderer = new THREE.WebGLRenderer({canvas:glCanvas, context:gl,
+      alpha:true, antialias:false});
+    renderer.setPixelRatio(1);
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;
+    renderer.domElement.className = 'gl';
+    document.body.appendChild(renderer.domElement);
+    beacon('GL ready at load');
+    return true;
+  } catch(e){ report('initGL', e); renderer = null; return false; }
+}
 async function select(id){
   if (starting || session) return;
   // Set this synchronously. Enter VR only needs the id; metadata is a bonus,
@@ -958,27 +983,13 @@ async function start(id, pre){
   try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
         replyAudio.pause(); replyAudio.muted=false; } catch(e){}
 
-  // Create the context XR-compatible up front. Letting three.js call
-  // makeXRCompatible() afterwards migrates the context to the XR device, and
-  // doing that with MSAA plus a 4K video texture already live crashed the tab.
-  const glCanvas = document.createElement('canvas');
-  const gl = glCanvas.getContext('webgl2', {
-    xrCompatible:true, alpha:true, antialias:false,
-    depth:true, stencil:false, powerPreference:'high-performance',
-    preserveDrawingBuffer:false, desynchronized:false});
-  if (!gl) throw new Error('no webgl2 context');
-  glCanvas.addEventListener('webglcontextlost', e => {
-    e.preventDefault(); beacon('WEBGL CONTEXT LOST'); }, false);
-  renderer = new THREE.WebGLRenderer({canvas:glCanvas, context:gl,
-    alpha:true, antialias:false});
-  renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight);
-  renderer.xr.enabled = true; renderer.domElement.className='gl';
-  document.body.appendChild(renderer.domElement);
+  if (!renderer && !initGL()) throw new Error('WebGL unavailable');
+  // fresh scene per session; the renderer and its GL context persist
   scene = new THREE.Scene();
-  const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.03, 100);
+  cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.03, 100);
   cam.layers.enable(1);
 
-  step('E renderer-created');
+  step('E renderer-ready');
   videoTex = new THREE.VideoTexture(video);
   videoTex.colorSpace = THREE.SRGBColorSpace; videoTex.minFilter = THREE.LinearFilter;
   group = new THREE.Group(); scene.add(group);
@@ -1046,6 +1057,7 @@ function cleanup(){
   try{ hbTimer && clearInterval(hbTimer); }catch(e){} hbTimer=null;
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
   try{ session && session.end(); }catch(e){}
+  // keep the renderer and its GL context alive for the next session
   // release the media element, or its audio keeps playing after exit
   try{ video && video.pause(); video && (video.src=''); video && video.load(); }catch(e){}
   try{ replyAudio.pause(); replyAudio.src=''; }catch(e){}
@@ -1061,6 +1073,7 @@ function cleanup(){
   $('stage').hidden = true; $('lib').hidden = false;
 }
 
+initGL();     // build the GL context before any session is ever requested
 loadLib();
 </script>
 </body>
