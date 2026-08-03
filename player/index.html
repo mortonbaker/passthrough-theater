@@ -84,7 +84,7 @@ const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
 
 /* ============================ state ============================ */
 let detail=null, vidId=null, video=null, renderer=null, scene=null, session=null, xrCam=null;
-let mats=[], group=null, uiRoot=null, videoTex=null;
+let mats=[], group=null, screenRoot=null, uiRoot=null, videoTex=null;
 let yaw=0, pitch=0, roll=0, posY=0, dist=0, scl=1;
 try { const f=JSON.parse(localStorage.getItem('framing')||'{}');
   yaw=f.yaw??0; pitch=f.pitch??0; roll=f.roll??0; posY=f.posY??0;
@@ -227,8 +227,12 @@ function applyKey(){
 }
 function applyTransform(){
   if (!group) return;
+  // Recentring lives on the parent. Composing it into the same Euler as pitch
+  // and roll rotates their axes with it: at baseYaw 64 deg a pitch of +20
+  // tilts the scene's up to (0.31,0.94,0.15) - mostly X, i.e. it reads as roll.
+  if (group.parent && group.parent.isGroup) group.parent.rotation.y = baseYaw;
   group.rotation.order='YXZ';
-  group.rotation.y=yaw+baseYaw; group.rotation.x=pitch; group.rotation.z=roll;
+  group.rotation.y=yaw; group.rotation.x=pitch; group.rotation.z=roll;
   group.position.y=posY; group.position.z=dist;
   group.scale.setScalar(1);            // a dome you sit inside cannot be zoomed by scale
   for (const m of mats) m.uniforms.uvZoom.value = scl;
@@ -319,6 +323,7 @@ const BAR = [
   {id:'play',  type:'btn', x:176,  y:30,  w:120, h:96},
   {id:'ctr',   type:'btn', x:312,  y:30,  w:120, h:96},
   {id:'lib',   type:'btn', x:448,  y:30,  w:120, h:96},
+  {id:'hide',  type:'btn', x:584,  y:30,  w:120, h:96},
   {id:'mic',   type:'btn', x:1150, y:30,  w:180, h:96},
   // row 2 - scrubber across the full width
   {id:'seek',  type:'slider', x:60, y:168, w:1416, h:76,
@@ -345,11 +350,12 @@ function drawBar(p){
   btn(c, w('play'), video && !video.paused ? '❚❚' : '▶', {hover:hov('play')});
   btn(c, w('ctr'),  '⌖', {hover:hov('ctr')});
   btn(c, w('lib'),  '☰', {hover:hov('lib')});
+  btn(c, w('hide'), '✕', {hover:hov('hide')});
   btn(c, w('mic'),  listening ? '● REC' : 'talk', {on:listening, hover:hov('mic'), font:'30px'});
   const t = video ? video.currentTime : 0,
         d = (video && video.duration) || (detail && detail.videoLength) || 0;
   c.fillStyle = C.txt; c.font = '38px system-ui';
-  c.fillText(`${fmt(t)} / ${fmt(d)}`, 600, 92);
+  c.fillText(`${fmt(t)} / ${fmt(d)}`, 740, 92);
   c.fillStyle = C.dim; c.font = '30px system-ui'; c.textAlign = 'right';
   c.fillText(clock(), W-40, 92); c.textAlign = 'left';
 
@@ -699,6 +705,7 @@ function widgetClick(p, w){
     case 'back': screenMode='browse'; syncScreens(); break;
     case 'close': screenMode='bar'; syncScreens(); break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
+    case 'hide': menuOn = false; needDraw = true; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  micOn ? pttStop() : pttStart(); break;
     case 'gear': if (advMode) panels.adv.holder.visible = !panels.adv.holder.visible; break;
@@ -812,11 +819,10 @@ function onSelectEnd(hand){
   if (drag && drag.hand===hand){ drag=null; return; }
   if (menuGrab && menuGrab.hand===hand){ menuGrab=null; return; }
   if (aiming && aiming.hand===hand){ aiming=null; return; }
-  if (td && !td.overUI && performance.now()-td.t < 320){
-    menuOn = !menuOn;
-    if (menuOn) anchorUI();
-    needDraw = true;
-  }
+  // With the menu hidden there is nothing to point at, so any trigger brings it
+  // back; while shown, only a brief click off-panel dismisses it.
+  if (!menuOn){ menuOn = true; needDraw = true; return; }
+  if (td && !td.overUI && performance.now()-td.t < 400){ menuOn = false; needDraw = true; }
 }
 function dragTo(hit){
   if (!drag) return;
@@ -1089,7 +1095,9 @@ async function start(id, pre){
   step('E renderer-ready');
   videoTex = new THREE.VideoTexture(video);
   videoTex.colorSpace = THREE.SRGBColorSpace; videoTex.minFilter = THREE.LinearFilter;
-  group = new THREE.Group(); scene.add(group);
+  group = new THREE.Group();
+  screenRoot = new THREE.Group();      // holds baseYaw only
+  screenRoot.add(group); scene.add(screenRoot);
   mats=[]; yaw=0;pitch=0;posY=0;dist=0;scl=1; grab=null;
   rebuildScreen(); applyKey();
   step('F screen-built mats=' + mats.length);
@@ -1171,7 +1179,7 @@ function cleanup(){
   try{ recStop(); }catch(e){}
   try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
   try{ vadCtx && vadCtx.close(); }catch(e){}
-  session=null; renderer=null; video=null; mats=[]; group=null; uiRoot=null;
+  session=null; renderer=null; video=null; mats=[]; group=null; screenRoot=null; uiRoot=null;
   panels={}; lasers={}; ctrls={}; drag=null; aiming=null; triggerDown={};
   micStream=null; vadCtx=null; listening=false; playing=false; playQueue=[];
   prevBtn.left={}; prevBtn.right={};
