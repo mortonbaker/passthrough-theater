@@ -37,8 +37,10 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   <div id="grid"></div>
   <p id="err"></p>
   <div id="legend">
-    <b>Trigger</b> points and clicks &middot; away from a panel it hides/shows the bar,
-    hold to re-aim it<br>
+    <b>Trigger</b> on a button clicks it &middot; on empty panel space, hold to carry the
+    menu anywhere &middot; a short click away from the menu hides/shows it<br>
+    <b>Left stick</b> rotate (yaw / pitch) &middot; <b>Right stick</b> zoom / seek &middot;
+    <b>Right grip</b> grab the scene with your hand<br>
     <b>&#9776;</b> library &nbsp; <b>&#127908;</b> hands-free voice &nbsp;
     <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
   </div>
@@ -73,7 +75,7 @@ const clock = () => new Date().toLocaleTimeString([], {hour:'numeric', minute:'2
 const UI = {
   barDist: 1.25, barWdeg: 44, barHdeg: 20, barPitch: -12,
   libDist: 1.7,  libWdeg: 56, libHdeg: 34, libPitch: -6,
-  advDist: 1.35, advWdeg: 40, advHdeg: 36, advPitch: -4,
+  advDist: 1.35, advWdeg: 40, advHdeg: 30, advPitch: 16,
   scale: parseFloat(localStorage.getItem('uiScale') || '1'),
 };
 const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
@@ -741,7 +743,7 @@ function buildUI(){
                        cw:LIB_CW, widgets:LIBW, draw:drawBrowse, order:10});
   makePanel('adv',    {dist:UI.advDist, wDeg:UI.advWdeg, hDeg:UI.advHdeg, pitch:UI.advPitch,
                        cw:ADV_CW, widgets:ADVW, draw:drawAdv, order:12});
-  panels.adv.holder.rotation.y = rad(26);       // sits to the right of the bar
+  panels.adv.holder.rotation.y = 0;             // directly above the bar
   panels.adv.holder.visible = false;
   for (const k in panels) uiRoot.add(panels[k].holder);
   scene.add(uiRoot);
@@ -767,18 +769,21 @@ function anchorUI(){
 }
 
 /* ============================ input ============================ */
-let triggerDown={}, drag=null, aiming=null;
+let triggerDown={}, drag=null, aiming=null, menuGrab=null;
 function onSelectStart(hand, ctrl){
   const hit = hitUI(ctrl);
   triggerDown[hand] = {t:performance.now(), overUI:!!hit};
   if (hit){
     if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
     else if (hit.widget) widgetClick(hit.panel, hit.widget);
+    // empty space on a panel is a handle: hold to carry the menu around
+    else menuGrab = {hand};
   }
 }
 function onSelectEnd(hand){
   const td = triggerDown[hand]; triggerDown[hand]=null;
   if (drag && drag.hand===hand){ drag=null; return; }
+  if (menuGrab && menuGrab.hand===hand){ menuGrab=null; return; }
   if (aiming && aiming.hand===hand){ aiming=null; return; }
   if (td && !td.overUI && performance.now()-td.t < 320){
     menuOn = !menuOn;
@@ -823,20 +828,16 @@ function updatePointers(){
       l.ring.visible = false; l.dot.visible = false;
     }
   }
-  // hold trigger away from UI = re-aim the menu
-  for (const hand of ['left','right']){
-    const td = triggerDown[hand];
-    if (td && !td.overUI && !drag && !aiming && performance.now()-td.t >= 320){
-      aiming = {hand};
-      if (!menuOn){ menuOn = true; needDraw = true; }
-    }
-  }
-  if (aiming && ctrls[aiming.hand] && uiRoot && xrCam){
-    const rc = rayFrom(ctrls[aiming.hand]);
+  // carrying the menu: it follows the ray in yaw AND pitch, so it can be placed
+  // anywhere including high or low, not just swung around the horizon
+  if (menuGrab && ctrls[menuGrab.hand] && uiRoot && xrCam){
+    const rc = rayFrom(ctrls[menuGrab.hand]);
     const camPos = new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld);
     uiRoot.position.copy(camPos);
-    const dir = rc.ray.direction.clone();
-    uiRoot.rotation.y = Math.atan2(-dir.x, -dir.z);
+    const d = rc.ray.direction.clone().normalize();
+    uiRoot.rotation.y = Math.atan2(-d.x, -d.z);
+    // cancel the bar's own downward tilt so it lands where you actually point
+    uiRoot.rotation.x = clamp(Math.asin(d.y) - rad(UI.barPitch), -1.1, 1.1);
     needDraw = true;
   }
   if (drag && ctrls[drag.hand]){
@@ -859,7 +860,14 @@ function pollGamepads(dt, frame){
     if (hand==='right'){
       if (edge(4)){ video && (video.paused?video.play():video.pause()); needDraw=true; }
       if (edge(5)) session.end();
-      if (edge(3)){ menuOn=!menuOn; if(menuOn) anchorUI(); needDraw=true; }
+      if (edge(3)){ menuOn=!menuOn; needDraw=true; }
+      if (!grip){
+        if (sy){ scl = clamp(scl*(1 - sy*dt*0.8), 0.3, 3); applyTransform(); }
+        if (sx && performance.now()>seekCool && Math.abs(sx)>0.6 && video && video.duration){
+          video.currentTime = clamp(video.currentTime+(sx>0?10:-10), 0, video.duration);
+          seekCool = performance.now()+400; needDraw=true;
+        }
+      }
       {
         if (grip && src.gripSpace && frame){
           const pose = frame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
@@ -880,10 +888,12 @@ function pollGamepads(dt, frame){
       }
     } else {
       {
-        if (sy){ if (grip) dist=clamp(dist-sy*dt*1.6,-3,3); else scl=clamp(scl*(1-sy*dt*0.8),0.3,3); applyTransform(); }
-        if (sx && performance.now()>seekCool && Math.abs(sx)>0.6 && video && video.duration){
-          video.currentTime = clamp(video.currentTime+(sx>0?10:-10),0,video.duration);
-          seekCool = performance.now()+400; needDraw=true;
+        // left stick is rotation: the most discoverable way to aim the scene
+        if (sx){ yaw -= sx*dt*1.2; applyTransform(); }
+        if (sy){
+          if (grip) dist = clamp(dist - sy*dt*1.6, -3, 3);
+          else pitch = clamp(pitch - sy*dt*0.9, -1.3, 1.3);
+          applyTransform();
         }
         if (edge(5)){ yaw=0;pitch=0;posY=0;dist=0;scl=1; applyTransform();
                       recenter(lastFrame); needDraw=true; }
