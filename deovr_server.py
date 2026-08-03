@@ -583,8 +583,11 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
             if detail.get("chroma") is None:
                 color = auto_key_color(it)
                 if color:
-                    detail["chroma"] = {"color": color, "similarity": 0.10,
-                                        "smoothness": 0.08, "auto": True}
+                    # tighter than the old black-key defaults: the player keys
+                    # in luma-weighted YCbCr now, so the wall clusters tightly
+                    # and a low threshold covers it without eating dark hair
+                    detail["chroma"] = {"color": color, "similarity": 0.08,
+                                        "smoothness": 0.05, "auto": True}
             return self.send_json(detail)
         self.send_error(404, "no such video")
 

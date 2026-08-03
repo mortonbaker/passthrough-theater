@@ -185,13 +185,22 @@ uniform sampler2D map; uniform vec2 uvOff, uvScl, matteOff;
 uniform float uvZoom;
 uniform int useMatte, useKey; uniform vec3 keyColor;
 uniform float similarity, smoothness, spill;
+// Key distance in luma-weighted YCbCr, not RGB. A room's lighting gradient is
+// almost entirely luminance at near-constant chrominance, so chroma-heavy
+// weighting collapses the whole wall into one tight cluster - the threshold
+// stays low and near-neutral dark hair survives. RGB distance forced a choice
+// between visible wall edges and keyed-out hair.
+vec3 ycc(vec3 c){
+  float y = dot(c, vec3(0.299, 0.587, 0.114));
+  return vec3(y * 0.6, (c.b - y) * 1.13, (c.r - y) * 1.43);
+}
 void main(){
   vec2 cuv = ((vUv - 0.5) / uvZoom + 0.5)*uvScl + uvOff;
   vec4 c = texture2D(map, cuv);
   float a = 1.0;
   if (useMatte==1) a = texture2D(map, cuv + matteOff).r;
   else if (useKey==1){
-    float d = distance(c.rgb, keyColor);
+    float d = distance(ycc(c.rgb), ycc(keyColor));
     a = smoothstep(similarity, similarity+smoothness, d);
     if (spill>0.5){ float g=max(c.r,c.b); c.g = min(c.g, g + (c.g-g)*0.2); }
   }
