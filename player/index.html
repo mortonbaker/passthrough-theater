@@ -980,8 +980,17 @@ async function start(id, pre){
   });
   step('D metadata ' + video.videoWidth + 'x' + video.videoHeight);
   replyAudio.volume = chatVol;
-  try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
-        replyAudio.pause(); replyAudio.muted=false; } catch(e){}
+  // Never await this. play() on an element with no src returns a promise that
+  // Chromium never settles, which hung start() here and stopped the session
+  // from ever being attached. Prime it fire-and-forget with a silent source.
+  try {
+    replyAudio.muted = true;
+    replyAudio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4A'
+                   + 'AAB9AAACABAAZGF0YQAAAAA=';
+    const p = replyAudio.play();
+    if (p && p.catch) p.catch(()=>{});
+    setTimeout(() => { try { replyAudio.pause(); replyAudio.muted = false; } catch(e){} }, 0);
+  } catch(e){ replyAudio.muted = false; }
 
   if (!renderer && !initGL()) throw new Error('WebGL unavailable');
   // fresh scene per session; the renderer and its GL context persist
