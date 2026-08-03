@@ -37,12 +37,12 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   <div id="grid"></div>
   <p id="err"></p>
   <div id="legend">
-    <b>Trigger</b> on a button clicks it &middot; on empty panel space, hold to carry the
-    menu anywhere &middot; a short click away from the menu hides/shows it<br>
+    <b>Trigger</b> tap toggles the menu &middot; on a button it clicks &middot; hold on
+    empty panel space to carry the menu anywhere<br>
     <b>Left stick</b> rotate (yaw / pitch) &middot; <b>Right stick</b> zoom / seek &middot;
     <b>Right grip</b> grab the scene with your hand<br>
-    <b>&#10005;</b> exit video &nbsp; <b>&#9776;</b> library &nbsp; <b>&#9881;</b> advanced &nbsp;
-    <b>A</b> play/pause &nbsp; <b>B</b> exit
+    <b>&#128682;</b> exit video &nbsp; <b>&#10005;</b> hide menu &nbsp; <b>&#9776;</b> library &nbsp;
+    <b>&#9881;</b> advanced &nbsp; <b>A</b> play/pause &nbsp; <b>B</b> exit
   </div>
 </div>
 <div id="stage" hidden>
@@ -75,7 +75,7 @@ const clock = () => new Date().toLocaleTimeString([], {hour:'numeric', minute:'2
 const UI = {
   barDist: 1.25, barWdeg: 46, barHdeg: 26, barPitch: -13,
   libDist: 1.7,  libWdeg: 56, libHdeg: 34, libPitch: -6,
-  advDist: 1.35, advWdeg: 40, advHdeg: 38, advPitch: 16,
+  advDist: 1.35, advWdeg: 40, advHdeg: 38,
   scale: parseFloat(localStorage.getItem('uiScale') || '1'),
 };
 const C = {bg:'rgba(14,14,16,0.90)', bg2:'rgba(22,22,26,0.95)', line:'#2f2f36',
@@ -329,11 +329,12 @@ const BAR = [
   // row 1 - library and title on the left, utilities and exit on the right,
   // the way DeoVR arranges its bar: navigation on top, transport below
   {id:'lib',   type:'btn', x:40,   y:30,  w:110, h:84},
-  {id:'ctr',   type:'btn', x:922,  y:30,  w:96,  h:84},
-  {id:'mic',   type:'btn', x:1030, y:30,  w:150, h:84},
-  {id:'gear',  type:'btn', x:1192, y:30,  w:96,  h:84},
-  {id:'adv',   type:'btn', x:1300, y:30,  w:96,  h:84},
-  {id:'exit',  type:'btn', x:1408, y:30,  w:96,  h:84},
+  {id:'ctr',   type:'btn', x:826,  y:30,  w:96,  h:84},
+  {id:'mic',   type:'btn', x:934,  y:30,  w:150, h:84},
+  {id:'gear',  type:'btn', x:1096, y:30,  w:96,  h:84},
+  {id:'adv',   type:'btn', x:1208, y:30,  w:96,  h:84},
+  {id:'hide',  type:'btn', x:1316, y:30,  w:88,  h:84},
+  {id:'exit',  type:'btn', x:1412, y:30,  w:92,  h:84},
   // row 2 - scrubber with the current time and duration at its ends
   {id:'seek',  type:'slider', x:190, y:150, w:1156, h:76,
      get:()=> video && video.duration ? video.currentTime/video.duration : 0,
@@ -361,16 +362,17 @@ function drawBar(p){
   // row 1: library, title, clock, utilities, exit
   btn(c, w('lib'),  '☰', {hover:hov('lib')});
   let title = (detail && detail.title) || '';
-  if (title.length > 36) title = title.slice(0,35)+'…';
+  if (title.length > 28) title = title.slice(0,27)+'…';
   c.fillStyle = C.txt; c.font = '32px system-ui';
   c.fillText(title, 180, 84);
   c.fillStyle = C.dim; c.font = '26px system-ui'; c.textAlign = 'right';
-  c.fillText(clock(), 906, 84); c.textAlign = 'left';
+  c.fillText(clock(), 810, 84); c.textAlign = 'left';
   btn(c, w('ctr'),  '⌖', {hover:hov('ctr')});
   btn(c, w('mic'),  listening ? '● REC' : 'talk', {on:listening, hover:hov('mic'), font:'30px'});
   if (advMode) btn(c, w('gear'), '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
   btn(c, w('adv'), 'ADV', {on:advMode, hover:hov('adv'), font:'24px'});
-  btn(c, w('exit'), '✕', {hover:hov('exit')});
+  btn(c, w('hide'), '✕', {hover:hov('hide')});
+  btn(c, w('exit'), '🚪', {hover:hov('exit'), font:'34px'});
 
   // row 2: time, scrubber, duration
   const t = video ? video.currentTime : 0,
@@ -758,6 +760,7 @@ function widgetClickInner(p, w){
     detail.is3d = w.st !== 'off'; rebuildScreen(); } return; }
   switch(w.id){
     case 'play': video && (video.paused? video.play() : video.pause()); break;
+    case 'hide': menuOn = false; break;
     case 'exit': beacon('EXIT via bar'); if (session) session.end(); break;
     case 'close': screenMode='bar'; syncScreens(); break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
@@ -840,7 +843,12 @@ function buildUI(){
                        cw:BAR_W, widgets:BAR, draw:drawBar, order:10});
   makePanel('browse', {dist:UI.libDist, wDeg:UI.libWdeg, hDeg:UI.libHdeg, pitch:UI.libPitch,
                        cw:LIB_CW, widgets:LIBW, draw:drawBrowse, order:10});
-  makePanel('adv',    {dist:UI.advDist, wDeg:UI.advWdeg, hDeg:UI.advHdeg, pitch:UI.advPitch,
+  // The adv panel sits fully above the bar, never over it: the bar is nearer
+  // (1.25 vs 1.35), so wherever they overlap the raycast hits the bar first
+  // and the panel behind becomes unclickable. Bar top edge plus a 2° margin,
+  // scale-aware because UI.scale grows both panels.
+  makePanel('adv',    {dist:UI.advDist, wDeg:UI.advWdeg, hDeg:UI.advHdeg,
+                       pitch: UI.barPitch + ((UI.barHdeg + UI.advHdeg)*UI.scale)/2 + 2,
                        cw:ADV_CW, widgets:ADVW, draw:drawAdv, order:12});
   panels.adv.holder.rotation.y = 0;             // directly above the bar
   panels.adv.holder.visible = false;
@@ -873,7 +881,8 @@ function onSelectStart(hand, ctrl){
   const hit = hitUI(ctrl);
   // remember whether the menu was up when the press began: releasing the very
   // press that hid it must not immediately bring it back
-  triggerDown[hand] = {t:performance.now(), overUI:!!hit, menuWas:menuOn};
+  triggerDown[hand] = {t:performance.now(), overUI:!!hit,
+                       widget:!!(hit && hit.widget), menuWas:menuOn};
   if (hit){
     if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
     else if (hit.widget) widgetClick(hit.panel, hit.widget);
@@ -884,15 +893,19 @@ function onSelectStart(hand, ctrl){
 function onSelectEnd(hand){
   const td = triggerDown[hand]; triggerDown[hand]=null;
   if (drag && drag.hand===hand){ drag=null; return; }
-  if (menuGrab && menuGrab.hand===hand){ menuGrab=null; return; }
   if (aiming && aiming.hand===hand){ aiming=null; return; }
-  // With the menu hidden there is nothing to point at, so any trigger brings it
-  // back; while shown, only a brief click off-panel dismisses it.
+  const quick = td && performance.now()-td.t < 400;
+  if (menuGrab && menuGrab.hand===hand){
+    menuGrab=null;
+    if (!quick) return;              // a real carry ends here; a tap falls through
+  }
+  // DeoVR behaviour: a quick trigger tap that didn't click a widget toggles the
+  // menu — anywhere, over the panel or not. Holds carry/drag and don't toggle.
   if (!menuOn){
     if (td && !td.menuWas){ menuOn = true; needDraw = true; }   // it was already hidden
     return;
   }
-  if (td && !td.overUI && performance.now()-td.t < 400){ menuOn = false; needDraw = true; }
+  if (quick && !td.widget){ menuOn = false; needDraw = true; }
 }
 function dragTo(hit){
   if (!drag) return;

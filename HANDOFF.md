@@ -12,9 +12,13 @@ run locally: parse checks, copy, restart, verify). Deployed build stamp
 - `micOn` was never declared — every mic-button click threw a ReferenceError
   (seen in the client log) and widgetClick is now wrapped so one broken widget
   can't eat clicks silently.
-- ✕ on the bar now **exits the video** (DeoVR semantics). Hiding the menu is
-  click-away or right-stick-click, as before. B still exits; both paths beacon
+- Exit is the 🚪 button (operator preference); ✕ hides the menu. A quick
+  trigger tap anywhere that isn't a widget toggles the menu, DeoVR-style;
+  holds still carry/drag. B still exits; exit paths beacon
   `EXIT via bar` / `EXIT via B` so the log finally shows exit attempts.
+- The adv panel's pitch is computed from the bar's top edge (scale-aware),
+  because the bar is nearer and wins the raycast wherever they overlap —
+  which made the adv panel's lower buttons unclickable.
 - Grip-grab yaw/pitch signs flipped: rotation now follows the hand like the
   height mapping always did — the old opposing signs are what read as
   "the axes are messed up". Axis assignments themselves were already canonical
