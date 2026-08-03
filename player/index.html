@@ -73,7 +73,7 @@ const clock = () => new Date().toLocaleTimeString([], {hour:'numeric', minute:'2
 // Ergonomics, from Meta's spatial guidelines: >=0.5m or eyes strain, 1.0-1.5m is
 // the comfortable band, +-30deg horizontal / +20 up / -12 down before neck strain.
 const UI = {
-  barDist: 1.25, barWdeg: 44, barHdeg: 20, barPitch: -12,
+  barDist: 1.25, barWdeg: 46, barHdeg: 26, barPitch: -13,
   libDist: 1.7,  libWdeg: 56, libHdeg: 34, libPitch: -6,
   advDist: 1.35, advWdeg: 40, advHdeg: 30, advPitch: 16,
   scale: parseFloat(localStorage.getItem('uiScale') || '1'),
@@ -314,59 +314,70 @@ function panelBG(c, w, h){
 /* ============================ playback bar ============================ */
 const BAR_W = 1536;
 const BAR = [
-  {id:'back',  type:'btn', x:34,  y:26,  w:110, h:84},
-  {id:'play',  type:'btn', x:158, y:26,  w:110, h:84},
-  {id:'seek',  type:'slider', x:60, y:132, w:1416, h:74,
+  // row 1 - transport, generous targets, nothing crowded
+  {id:'back',  type:'btn', x:40,   y:30,  w:120, h:96},
+  {id:'play',  type:'btn', x:176,  y:30,  w:120, h:96},
+  {id:'ctr',   type:'btn', x:312,  y:30,  w:120, h:96},
+  {id:'lib',   type:'btn', x:448,  y:30,  w:120, h:96},
+  {id:'mic',   type:'btn', x:1150, y:30,  w:180, h:96},
+  // row 2 - scrubber across the full width
+  {id:'seek',  type:'slider', x:60, y:168, w:1416, h:76,
      get:()=> video && video.duration ? video.currentTime/video.duration : 0,
      set:v => { if (video && video.duration) video.currentTime = v*video.duration; }},
-  {id:'vvol',  type:'slider', x:190, y:236, w:330, h:64,
+  // row 3 - audio on the left, modes far right so they cannot be hit by accident
+  {id:'vvol',  type:'slider', x:210, y:286, w:380, h:70,
      get:()=>videoVol, set:v=>{ videoVol=v; if(video) video.volume=v;
        localStorage.setItem('videoVol', v); }},
-  {id:'cvol',  type:'slider', x:700, y:236, w:330, h:64,
+  {id:'cvol',  type:'slider', x:760, y:286, w:380, h:70,
      get:()=>chatVol, set:v=>{ chatVol=v; replyAudio.volume=v;
        localStorage.setItem('chatVol', v); }},
-  {id:'ctr',   type:'btn', x:1036, y:230, w:58,  h:80},
-  {id:'lib',   type:'btn', x:1100, y:230, w:110, h:80},
-  {id:'mic',   type:'btn', x:1224, y:230, w:130, h:80},
-  {id:'gear',  type:'btn', x:1368, y:230, w:66,  h:80},
-  {id:'adv',   type:'btn', x:1444, y:230, w:66,  h:80},
+  {id:'gear',  type:'btn', x:1250, y:280, w:100, h:82},
+  {id:'adv',   type:'btn', x:1366, y:280, w:110, h:82},
 ];
 function drawBar(p){
   const c = p.ctx, W = p.cv.width, H = p.cv.height;
   panelBG(c, W, H);
   const hov = id => p.hover === id;
-  btn(c, BAR[0], '⟲', {hover:hov('back')});
-  btn(c, BAR[1], video && !video.paused ? '❚❚' : '▶', {hover:hov('play')});
-  const t = video ? video.currentTime : 0, d = (video && video.duration) || (detail && detail.videoLength) || 0;
-  c.fillStyle = C.txt; c.font = '34px system-ui';
-  c.fillText(`${fmt(t)} / ${fmt(d)}`, 296, 82);
+  const w = id => BAR.find(x => x.id === id);
+
+  // row 1: transport + clock
+  btn(c, w('back'), '⟲', {hover:hov('back')});
+  btn(c, w('play'), video && !video.paused ? '❚❚' : '▶', {hover:hov('play')});
+  btn(c, w('ctr'),  '⌖', {hover:hov('ctr')});
+  btn(c, w('lib'),  '☰', {hover:hov('lib')});
+  btn(c, w('mic'),  listening ? '● REC' : 'talk', {on:listening, hover:hov('mic'), font:'30px'});
+  const t = video ? video.currentTime : 0,
+        d = (video && video.duration) || (detail && detail.videoLength) || 0;
+  c.fillStyle = C.txt; c.font = '38px system-ui';
+  c.fillText(`${fmt(t)} / ${fmt(d)}`, 600, 92);
   c.fillStyle = C.dim; c.font = '30px system-ui'; c.textAlign = 'right';
-  c.fillText(clock(), W-40, 82);
-  c.textAlign = 'left';
-  if (detail){ c.fillStyle = C.dim; c.font='26px system-ui';
-    let ti = detail.title || ''; if (ti.length > 44) ti = ti.slice(0,43)+'…';
-    c.fillText(ti, 640, 80); }
-  slider(c, BAR[2], BAR[2].get(), {hover:hov('seek')});
-  slider(c, BAR[3], videoVol, {hover:hov('vvol'), label:'🔊 video', value:Math.round(videoVol*100)+'%'});
-  slider(c, BAR[4], chatVol,  {hover:hov('cvol'), label:'💬 chat',  value:Math.round(chatVol*100)+'%'});
-  btn(c, BAR[5], '⌖', {hover:hov('ctr')});
-  btn(c, BAR[6], '☰', {hover:hov('lib')});
-  btn(c, BAR[7], listening ? '● LIVE' : '🎤', {on:listening, hover:hov('mic'), font: listening?'26px':'30px'});
-  // progressive disclosure: the advanced panel only exists once ADV is on
-  if (advMode) btn(c, BAR[8], '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
-  btn(c, BAR[9], 'ADV', {on:advMode, hover:hov('adv'), font:'22px'});
+  c.fillText(clock(), W-40, 92); c.textAlign = 'left';
+
+  // row 2: scrubber
+  slider(c, w('seek'), w('seek').get(), {hover:hov('seek')});
+
+  // row 3: audio, then modes
+  slider(c, w('vvol'), videoVol, {hover:hov('vvol'), label:'video',
+         value:Math.round(videoVol*100)+'%'});
+  slider(c, w('cvol'), chatVol,  {hover:hov('cvol'), label:'chat',
+         value:Math.round(chatVol*100)+'%'});
+  if (advMode) btn(c, w('gear'), '⚙', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
+  btn(c, w('adv'), 'ADV', {on:advMode, hover:hov('adv'), font:'24px'});
+
+  // status line
   if (centerAt){
     const left = Math.max(0, Math.ceil((centerAt - performance.now())/1000));
     c.fillStyle = C.accent; c.font='30px system-ui';
-    c.fillText('look where you want it, recentering in ' + left + '…', 60, 330);
+    c.fillText('look where you want it, recentering in ' + left + '…', 60, 404);
+  } else if (performance.now() < noteUntil){
+    c.fillStyle = C.ok; c.font='28px system-ui'; c.fillText(saveNote, 60, 404);
+  } else if (voiceStatus){
+    c.fillStyle = listening ? C.rec : C.ok; c.font='28px system-ui';
+    c.fillText(voiceStatus.slice(0,70), 60, 404);
+  } else if (voiceReply){
+    c.fillStyle = C.dim; c.font='28px system-ui';
+    c.fillText(('Mariko: ' + voiceReply).slice(0,70), 60, 404);
   }
-  else if (performance.now() < noteUntil){ c.fillStyle=C.ok; c.font='28px system-ui'; c.fillText(saveNote, 296, 122); }
-  if (voiceStatus){ c.fillStyle = listening ? C.rec : C.ok; c.font='26px system-ui';
-    let s = voiceStatus; if (s.length>70) s = s.slice(0,69)+'…';
-    c.fillText(s, 60, 330); }
-  else if (voiceReply){ c.fillStyle=C.dim; c.font='26px system-ui';
-    let s = 'Mariko: ' + voiceReply; if (s.length>70) s = s.slice(0,69)+'…';
-    c.fillText(s, 60, 330); }
   p.tex.needsUpdate = true;
 }
 
@@ -498,8 +509,7 @@ function duck(on){ if (video) video.volume = videoVol * (on ? 0.25 : 1); }
 function enqueue(b64, text){ playQueue.push({b64,text}); if (!playing) playNext(); }
 function playNext(){
   const it = playQueue.shift();
-  if (!it){ playing=false; duck(false); voiceStatus = listening ? 'listening…' : '';
-            vadArmed = listening; needDraw=true; return; }
+  if (!it){ playing=false; duck(false); voiceStatus=''; needDraw=true; return; }
   playing=true; duck(true);
   voiceReply = it.text; voiceStatus=''; needDraw=true;
   replyAudio.volume = chatVol;
@@ -529,6 +539,22 @@ function recStart(){
 }
 function recStop(){ try { micRec && micRec.state!=='inactive' && micRec.stop(); } catch(e){} }
 
+async function pttStart(){
+  if (micOn || voiceBusy) return;
+  try {
+    await ensureMic();
+    if (vadCtx && vadCtx.state === 'suspended') await vadCtx.resume();
+    recStart();
+    micOn = true; listening = true;
+    voiceStatus = 'listening… press again to send'; needDraw = true;
+  } catch(e){ voiceStatus = 'mic blocked: ' + (e.message||e); needDraw = true; }
+}
+function pttStop(){
+  if (!micOn) return;
+  micOn = false; listening = false;
+  voiceStatus = 'thinking…'; needDraw = true;
+  recStop();                       // onstop sends it
+}
 async function toggleListen(){
   if (listening){
     listening=false; vadArmed=false; vadSpeaking=false;
@@ -542,7 +568,8 @@ async function toggleListen(){
   } catch(e){ voiceStatus = 'mic blocked: ' + (e.message||e); needDraw=true; }
 }
 function pollVAD(){
-  if (!listening || !vadAnalyser) return;
+  return;   // push-to-talk; energy detection did not re-arm reliably
+
   // barge-in: talking while she speaks cancels playback
   vadAnalyser.getFloatTimeDomainData(vadData);
   let sum=0; for (let i=0;i<vadData.length;i++) sum += vadData[i]*vadData[i];
@@ -598,7 +625,7 @@ async function sendVoice(){
     }
   } catch(e){ voiceStatus='voice failed: '+(e.message||e); }
   voiceBusy=false;
-  if (listening && !playing) vadArmed = true;
+  vadArmed = false;
   needDraw=true;
 }
 async function saveSidecar(){
@@ -673,7 +700,7 @@ function widgetClick(p, w){
     case 'close': screenMode='bar'; syncScreens(); break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
-    case 'mic':  toggleListen(); break;
+    case 'mic':  micOn ? pttStop() : pttStart(); break;
     case 'gear': if (advMode) panels.adv.holder.visible = !panels.adv.holder.visible; break;
     case 'adv':
       advMode = !advMode; localStorage.setItem('advMode', advMode?'1':'0');
