@@ -32,7 +32,7 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
 </head>
 <body>
 <div id="lib">
-  <h1>Passthrough Theater</h1>
+  <h1>Passthrough Theater <span style="color:#555;font-weight:400">build __BUILD__</span></h1>
   <p class="sub">tap a video to enter passthrough &mdash; browsing, settings and voice are all in-headset</p>
   <div id="grid"></div>
   <p id="err"></p>
@@ -97,16 +97,24 @@ let seekCool=0, grab=null;
 const SID = 'vr-' + Math.floor(Math.random()*1e9);
 const thumbs = {};                            // id -> Image
 
-// There is no console in the headset, so faults are shipped to the server log.
+// No console in the headset. sendBeacon rather than fetch: the browser flushes
+// beacons during page teardown, so a crash or reload still gets reported.
 const _seenErr = new Set();
+function beacon(msg){
+  const u = '/clientlog?m=' + encodeURIComponent(String(msg).slice(0,700));
+  try { if (navigator.sendBeacon && navigator.sendBeacon(u)) return; } catch(_){}
+  try { fetch(u, {keepalive:true}); } catch(_){}
+}
+function step(s){ beacon('STEP ' + s); }
 function report(tag, e){
   const msg = tag + ': ' + (e && (e.stack || e.message || e) || e);
   if (_seenErr.has(msg.slice(0,180))) return;
   _seenErr.add(msg.slice(0,180));
-  try { fetch('/clientlog?m=' + encodeURIComponent(msg.slice(0,700))); } catch(_){}
+  beacon(msg);
 }
 window.addEventListener('error', ev => report('window.onerror', ev.error || ev.message));
 window.addEventListener('unhandledrejection', ev => report('unhandled', ev.reason));
+window.addEventListener('pagehide', () => beacon('PAGEHIDE session=' + (!!session)));
 
 /* ============================ library ============================ */
 async function loadLib(){
@@ -867,6 +875,7 @@ function pollGamepads(dt, frame){
 // consumes it -- which silently dropped the session and left the audio running.
 // So: prepare here, then let the Enter VR click own the session request.
 let starting = false, pending = null, selectedId = null;
+let frameCount = 0, hbTimer = null;
 async function select(id){
   if (starting || session) return;
   // Set this synchronously. Enter VR only needs the id; metadata is a bonus,
@@ -917,12 +926,15 @@ $('go').onclick = async () => {
 $('cancel') && ($('cancel').onclick = () => { pending=null; selectedId=null; $('stage').hidden = true; });
 
 async function start(id, pre){
+  step('A go-clicked');
   if (!navigator.xr) throw new Error('WebXR unavailable — open the https URL');
   // FIRST, while the click is still live: everything else can wait.
   const xrs = await navigator.xr.requestSession('immersive-ar');
+  step('B session-granted');
 
   vidId = id;
   detail = pre || await (await fetch('/video/'+id)).json();
+  step('C detail ' + detail.screenType + ' ' + detail.stereoMode);
   const ch = detail.chroma || {};
   keyState.color = ch.color || '#000000';
   keyState.similarity = ch.similarity ?? 0.10;
@@ -933,6 +945,7 @@ async function start(id, pre){
   video.src = detail.encodings[0].videoSources[0].url;
   video.loop = true; video.playsInline = true; video.volume = videoVol;
   await video.play().catch(()=>{});
+  step('D video-playing ' + video.videoWidth + 'x' + video.videoHeight);
   replyAudio.volume = chatVol;
   try { replyAudio.muted = true; await replyAudio.play().catch(()=>{});
         replyAudio.pause(); replyAudio.muted=false; } catch(e){}
@@ -945,13 +958,16 @@ async function start(id, pre){
   const cam = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.03, 100);
   cam.layers.enable(1);
 
+  step('E renderer-created');
   videoTex = new THREE.VideoTexture(video);
   videoTex.colorSpace = THREE.SRGBColorSpace; videoTex.minFilter = THREE.LinearFilter;
   group = new THREE.Group(); scene.add(group);
   mats=[]; yaw=0;pitch=0;posY=0;dist=0;scl=1; grab=null;
   rebuildScreen(); applyKey();
+  step('F screen-built mats=' + mats.length);
 
   buildUI();
+  step('G ui-built ' + Object.keys(panels).join(','));
 
   for (const i of [0,1]){
     const c = renderer.xr.getController(i);
@@ -968,10 +984,12 @@ async function start(id, pre){
     scene.add(c);
   }
 
+  step('H controllers-added');
   session = xrs;
   session.addEventListener('end', cleanup);
   renderer.xr.setReferenceSpaceType('local');
   await renderer.xr.setSession(session);
+  step('I setSession-ok');
   $('stage').hidden = true; $('lib').hidden = true; pending = null;
 
   let last=performance.now(), tick=0, anchored=false;
@@ -979,6 +997,7 @@ async function start(id, pre){
   // scene rendering, or the session looks completely dead.
   const guard = (tag, fn) => { try { fn(); } catch(e){ report(tag, e); } };
   renderer.setAnimationLoop((t, frame) => {
+    frameCount++;
     const now=performance.now(), dt=Math.min(0.1,(now-last)/1000); last=now;
     try { xrCam = renderer.xr.getCamera(); } catch(e){ report('getCamera', e); }
     if (!anchored){ guard('anchorUI', anchorUI); anchored = true; }
@@ -993,10 +1012,16 @@ async function start(id, pre){
     }
     try { renderer.render(scene, cam); } catch(e){ report('render', e); }
   });
-  report('session-started', 'ok panels=' + Object.keys(panels).join(',')
-    + ' screen=' + (detail && detail.screenType) + ' mats=' + mats.length);
+  step('J loop-installed');
+  // Heartbeat proves whether the loop is really running, and for how long,
+  // which separates "never started" from "started then died".
+  hbTimer = setInterval(() => {
+    if (!session){ clearInterval(hbTimer); hbTimer=null; return; }
+    beacon('HEARTBEAT frames=' + frameCount);
+  }, 5000);
 }
 function cleanup(){
+  try{ hbTimer && clearInterval(hbTimer); }catch(e){} hbTimer=null;
   try{ renderer && renderer.setAnimationLoop(null); }catch(e){}
   try{ session && session.end(); }catch(e){}
   // release the media element, or its audio keeps playing after exit

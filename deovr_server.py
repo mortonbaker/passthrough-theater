@@ -288,6 +288,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -337,9 +338,18 @@ class Handler(BaseHTTPRequestHandler):
                  "css": "text/css"}.get(ext, "application/octet-stream")
         with open(fp, "rb") as fh:
             data = fh.read()
+        build = str(int(os.path.getmtime(fp)))
+        if ext == "html":
+            data = data.replace(b"__BUILD__", build.encode())
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        # Without this the headset browser serves a stale copy indefinitely:
+        # nothing here sent Cache-Control, ETag or Last-Modified, so Chromium
+        # fell back to heuristic caching.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("X-Build", build)
         self.end_headers()
         self.wfile.write(data)
 
@@ -413,6 +423,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         # DeoVR probes with HEAD before streaming.
         path = urllib.parse.urlparse(self.path).path
+        if path == "/player" or path.startswith("/player/"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         if path.startswith("/media/"):
             name = urllib.parse.unquote(path[len("/media/"):])
             fp = os.path.join(MEDIA_DIR, os.path.basename(name))
