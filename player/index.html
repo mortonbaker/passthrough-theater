@@ -17,6 +17,9 @@ p.sub{color:#888;margin:0 0 18px}
 button{background:#2a6df4;color:#fff;border:0;border-radius:10px;padding:18px 34px;
   font-size:20px;cursor:pointer;margin:0 10px 0 0}
 button.grey{background:#333}
+/* display:flex beats the UA rule for [hidden], so the overlay must opt out
+   explicitly or it covers the page permanently. */
+[hidden]{display:none !important}
 #stage{position:fixed;inset:0;background:rgba(8,8,10,.96);z-index:5;
   display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;text-align:center}
 #stage img{width:260px;height:260px;object-fit:cover;border-radius:14px;background:#000;margin-bottom:18px}
