@@ -47,8 +47,17 @@ else
 fi
 
 echo "== verifying =="
-ssh -o BatchMode=yes "$HOST" "curl -sk -o /tmp/_p.html -D /tmp/_h.txt https://127.0.0.1:8253/player/ \
-  && grep -i x-build /tmp/_h.txt \
-  && python3 -c \"import json,urllib.request,ssl; ctx=ssl._create_unverified_context(); \
-     d=json.load(urllib.request.urlopen('https://127.0.0.1:8253/deovr', context=ctx)); \
-     print('   videos in manifest:', len(d['scenes'][0]['list']))\""
+verify() {
+  curl -sk -o /dev/null -D /tmp/_h.txt https://127.0.0.1:8253/player/
+  grep -i x-build /tmp/_h.txt
+  "$1" -c "import json,urllib.request,ssl
+ctx = ssl._create_unverified_context()
+def get(p):
+    return json.load(urllib.request.urlopen('https://127.0.0.1:8253' + p, context=ctx))
+print('   videos:', len(get('/deovr')['scenes'][0]['list']))
+t = get('/music')['tracks']
+print('   tracks:', len(t), '(' + str(sum(1 for x in t if x.get('charted'))) + ' charted)')"
+}
+if [ -d "$BASE" ]; then verify "$PY"
+else ssh -o BatchMode=yes "$HOST" "$(declare -f verify); verify python3"
+fi
