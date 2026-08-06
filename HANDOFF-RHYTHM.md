@@ -237,6 +237,33 @@ Follow-ups the research suggests, not built: beat/measure lines riding the
 highway (session payload would need `beats`), real hit detection with
 differentiated hit-vs-miss feedback, an optional on-beat audio tick.
 
+## Addendum 3 — same day: phrased cues
+
+Operator heard it and called the flaw: every section was a uniform stream —
+"the yellow and the red are on the same beat" (true mechanically: at high bpm
+the double and fast rungs both map to every-beat), no peaks and valleys
+inside a section. `cues()` now lays bar-level phrases over the grid:
+
+- every density has holes and answers (skip bars, pickup bars, breath bars);
+- **yellow** settles into its pace, then every once in a while throws one
+  offbeat or drops one beat — acceleration without overwhelm;
+- **red** is a scripted arc, per the operator's spec: on-off pairs with air
+  between them → pairs closing up → a crescendo of straight eighths → a dead
+  bar → a syncopated "on on on-off" resume. Eighth-told where the offbeat
+  clears MIN_GAP (≲136 bpm), the same shape told in whole beats above that.
+
+Also found while verifying: **the offbeat gate had never worked.** It checked
+midpoints against the percussive BEAT grid, where a midpoint can never sit —
+a null gate; no offbeat ever survived charting, in any prior build. Charts
+now store the raw `onsets` list and gate offbeats against that (old charts
+without the field let offs through instead of silently killing them).
+
+All 14 tracks recharted with `--force`. Verified bar-by-bar from the chart
+JSON: Fatso (130 bpm) fast = `[0,.5] · [2,2.5] · [0,.5,2,2.5] · eighths ·
+eighths · [] · [0,1,2,2.5]`, min gap 0.231 s; S3RL (178) runs the beat-told
+version; yellow shows the 2.5 spice. Build `1786008959`. Everything from
+addenda 1–3 still awaits the headset.
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
