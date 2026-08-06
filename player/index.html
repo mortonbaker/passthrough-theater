@@ -893,6 +893,9 @@ function rhyStart(){
   needDraw = true;
 }
 function rhyStop(){
+  // detach before stopping, or the old source's onended clears rhyPlaying
+  // after the next one has already started
+  try { if (rhySrc) rhySrc.onended = null; } catch(e){}
   try { rhySrc && rhySrc.stop(); } catch(e){}
   try { rhySrc && rhySrc.disconnect(); } catch(e){}
   rhySrc = null; rhyPlaying = false;

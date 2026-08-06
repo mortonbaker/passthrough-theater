@@ -127,6 +127,10 @@ function play(from){
   src.onended = () => { playing = false; };
 }
 function stop(){
+  // Detach first: stopping fires this source's onended asynchronously, which
+  // would otherwise land after the next track has set playing=true and flip it
+  // back to false - audio keeps going, nothing draws.
+  try { if (src) src.onended = null; } catch(e){}
   try { src && src.stop(); } catch(e){}
   try { src && src.disconnect(); } catch(e){}
   src = null; playing = false;
