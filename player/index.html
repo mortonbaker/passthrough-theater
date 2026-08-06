@@ -37,8 +37,8 @@ canvas.gl{position:fixed;inset:0;z-index:-1}
   <div id="grid"></div>
   <p id="err"></p>
   <div id="legend">
-    <b>Trigger</b> tap toggles the menu &middot; on a button it clicks &middot; hold on
-    empty panel space to carry the menu anywhere<br>
+    <b>Trigger</b> tap toggles the menu &middot; on a button it clicks &middot; hold the
+    grip pill at the top of the bar (or any empty panel space) to carry the menu anywhere<br>
     <b>Left stick</b> rotate (yaw / pitch) &middot; <b>Right stick</b> zoom / seek &middot;
     <b>Right grip</b> grab the scene with your hand<br>
     <b>door icon</b> exit video &nbsp; <b>&#10005;</b> hide menu &nbsp; <b>&#9776;</b> library &nbsp;
@@ -331,6 +331,16 @@ function panelBG(c, w, h){
   c.fillStyle = C.bg; rr(c,0,0,w,h,28); c.fill();
   c.strokeStyle = C.line; c.lineWidth = 2; c.stroke();
 }
+function drawGrabHandle(c, w, hov){
+  if (!w) return;
+  c.fillStyle = hov ? C.hover : '#1f1f26';
+  rr(c, w.x, w.y, w.w, w.h, 13); c.fill();
+  if (hov){ c.strokeStyle = C.accent; c.lineWidth = 2; c.stroke(); }
+  c.fillStyle = hov ? C.txt : '#4a4a56';
+  for (const dx of [-30, 0, 30]){
+    c.beginPath(); c.arc(w.x + w.w/2 + dx, w.y + w.h/2, 4, 0, 7); c.fill();
+  }
+}
 
 /* Flat monochrome icons, Material-style: one 5px stroke weight, geometric,
    centred on the target. Text glyphs and emoji render with different weights
@@ -413,6 +423,10 @@ function icon(c, w, name, opt={}){
 /* ============================ playback bar ============================ */
 const BAR_W = 1536;
 const BAR = [
+  // Horizon-OS-style grab handle: a visible pill you point at and hold to
+  // carry the whole menu. The invisible empty-space carry still works; this
+  // is the discoverable spot.
+  {id:'grab',  type:'grab', x:558, y:2, w:420, h:26},
   // row 1 - library and title on the left, utilities and exit on the right,
   // the way DeoVR arranges its bar: navigation on top, transport below
   {id:'lib',   type:'btn', x:40,   y:30,  w:110, h:84},
@@ -446,6 +460,8 @@ function drawBar(p){
   panelBG(c, W, H);
   const hov = id => p.hover === id;
   const w = id => BAR.find(x => x.id === id);
+
+  drawGrabHandle(c, w('grab'), hov('grab'));
 
   // row 1: library, title, clock, utilities, exit
   icon(c, w('lib'), 'menu', {hover:hov('lib')});
@@ -527,6 +543,7 @@ const LIBW = [];
   LIBW.push({id:'k_back',  type:'btn', x:252, y:256, w:150, h:60});
   LIBW.push({id:'k_clear', type:'btn', x:414, y:256, w:150, h:60});
   LIBW.push({id:'close',   type:'btn', x:1400, y:36, w:150, h:64});
+  LIBW.push({id:'grab',    type:'grab', x:590, y:2, w:420, h:26});
   LIBW.push({id:'s_title', type:'btn', sort:'title', x:1000, y:256, w:150, h:60});
   LIBW.push({id:'s_long',  type:'btn', sort:'long',  x:1162, y:256, w:180, h:60});
   LIBW.push({id:'s_short', type:'btn', sort:'short', x:1354, y:256, w:196, h:60});
@@ -548,6 +565,7 @@ function drawBrowse(p){
   c.fillText(libQuery ? '“'+libQuery+'”' : 'type to search', 260, 74);
   c.fillStyle = C.dim; c.font = '28px system-ui';
   c.fillText(`${libFiltered.length} of ${library.length}`, 1120, 74);
+  drawGrabHandle(c, LIBW.find(w=>w.id==='grab'), hov('grab'));
   icon(c, LIBW.find(w=>w.id==='close'), 'close', {hover:hov('close')});
   for (const w of LIBW){
     if (w.key) btn(c, w, w.key===' '?'space':w.key, {hover:hov(w.id), font:'28px', radius:10});
@@ -817,7 +835,7 @@ let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null, rhyBursts=null;
 // "hits" at its exact time — the burst is the beat made visible.
 const RHY_FX_AGE = 0.28;
 let rhyFx=[], rhyFxIdx=0, rhyFxChart=null, rhyFxLastT=0;
-let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='', rhyNotedOnce=false;
+let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='', rhyNotedOnce=false, rhyPage=0;
 let musicVol = parseFloat(localStorage.getItem('musicVol') || '0.8');
 // session mode: rhyRun is a generation token — bumped on every start/stop, so a
 // track still decoding (or a gap timer still pending) from a replaced run can
@@ -851,6 +869,7 @@ async function rhyLoadList(){
   try {
     const j = await (await fetch('/music')).json();
     rhyTracks = (j.tracks || []).filter(t => t.charted);
+    rhyPage = 0;
     rhyStatus = rhyTracks.length ? (rhyTracks.length + ' tracks') : 'no charted tracks';
   } catch(e){ rhyStatus = 'music list failed'; }
   needDraw = true;
@@ -973,6 +992,7 @@ async function rhyNextInSession(){
     rhyChart = {title:t.title, bpm:t.bpm, duration:t.duration,
                 cues:t.cues, sections:t.sections || [], beats:[]};
     rhyTrackIdx = rhyTracks.findIndex(x => x.name === t.name);
+    if (rhyTrackIdx >= 0) rhyPage = Math.floor(rhyTrackIdx / RHY_ROWS);
     // start just before the drums: a cold intro reads as 'nothing is happening'
     const from = Math.max(0, (t.grooveStart || 0) - 2.5);
     rhyStatus = stage + ' · ' + t.title + (from > 1 ? ' (' + from.toFixed(0) + 's in)' : '');
@@ -1183,6 +1203,8 @@ RHYW.push({id:'rhy_vol',     type:'slider', x:590, y:44, w:230, h:56,
            localStorage.setItem('musicVol', v); }});
 for (let i=0;i<RHY_ROWS;i++)
   RHYW.push({id:'rhy_'+i, type:'btn', trk:i, x:40, y:128+i*82, w:1020, h:72});
+RHYW.push({id:'rhy_pgp', type:'btn', x:40,  y:712, w:150, h:60});
+RHYW.push({id:'rhy_pgn', type:'btn', x:206, y:712, w:150, h:60});
 
 function drawRhythm(p){
   const c = p.ctx, W = p.cv.width, H = p.cv.height;
@@ -1201,19 +1223,24 @@ function drawRhythm(p){
   btn(c, w('rhy_close'), 'close', {hover:hov('rhy_close'), font:'26px'});
   c.fillStyle = C.dim; c.font = '24px system-ui';
   c.fillText(rhyStatus || '', 420, 118);
+  const pages = Math.max(1, Math.ceil(rhyTracks.length / RHY_ROWS));
   for (let i=0;i<RHY_ROWS;i++){
-    const wd = w('rhy_'+i), t = rhyTracks[i];
+    const wd = w('rhy_'+i), gi = rhyPage*RHY_ROWS + i, t = rhyTracks[gi];
     c.fillStyle = t ? (hov(wd.id) ? '#2b2b34' : '#1b1b21') : '#141418';
     rr(c, wd.x, wd.y, wd.w, wd.h, 12); c.fill();
     if (!t) continue;
-    if (i === rhyTrackIdx){ c.strokeStyle = C.accent2; c.lineWidth = 3; c.stroke(); }
-    c.fillStyle = i === rhyTrackIdx ? C.accent : C.txt; c.font = '28px system-ui';
+    if (gi === rhyTrackIdx){ c.strokeStyle = C.accent2; c.lineWidth = 3; c.stroke(); }
+    c.fillStyle = gi === rhyTrackIdx ? C.accent : C.txt; c.font = '28px system-ui';
     let ti = t.title || t.name; if (ti.length > 46) ti = ti.slice(0,45)+'…';
     c.fillText(ti, wd.x+18, wd.y+46);
     c.fillStyle = C.dim; c.font = '22px system-ui';
     c.fillText(Math.round(t.bpm||0) + ' bpm  ·  ' + fmt(t.duration||0)
                + '  ·  ' + (t.cues||0) + ' cues', wd.x+wd.w-330, wd.y+46);
   }
+  btn(c, w('rhy_pgp'), 'prev', {hover:hov('rhy_pgp'), font:'26px', muted:rhyPage===0});
+  btn(c, w('rhy_pgn'), 'next', {hover:hov('rhy_pgn'), font:'26px', muted:rhyPage>=pages-1});
+  c.fillStyle = C.dim; c.font = '26px system-ui';
+  c.fillText('page ' + (rhyPage+1) + ' / ' + pages + ' · ' + rhyTracks.length + ' tracks', 396, 752);
   p.tex.needsUpdate = true;
 }
 
@@ -1286,10 +1313,11 @@ function widgetClickInner(p, w){
   if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
   if (w.sort){ libSort = w.sort; localStorage.setItem('libSort', libSort); libApply(); return; }
   if (w.trk !== undefined){
-    if (rhyTracks[w.trk]){
+    const gi = rhyPage*RHY_ROWS + w.trk;
+    if (rhyTracks[gi]){
       rhyStopSession();                    // picking a track exits session mode
       const run = rhyRun;
-      rhyLoad(w.trk).then(() => { if (run === rhyRun) rhyStart(); });
+      rhyLoad(gi).then(() => { if (run === rhyRun) rhyStart(); });
     }
     return;
   }
@@ -1321,6 +1349,10 @@ function widgetClickInner(p, w){
     case 'rhy_mins':
       rhyMins = RHY_MINS[(RHY_MINS.indexOf(rhyMins) + 1) % RHY_MINS.length];
       localStorage.setItem('rhyMins', rhyMins);
+      break;
+    case 'rhy_pgp': rhyPage = Math.max(0, rhyPage - 1); break;
+    case 'rhy_pgn':
+      rhyPage = Math.min(Math.max(0, Math.ceil(rhyTracks.length/RHY_ROWS) - 1), rhyPage + 1);
       break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
@@ -1452,8 +1484,9 @@ function onSelectStart(hand, ctrl){
                        widget:!!(hit && hit.widget), menuWas:menuOn};
   if (hit){
     if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
+    else if (hit.widget && hit.widget.type==='grab') menuGrab = {hand};
     else if (hit.widget) widgetClick(hit.panel, hit.widget);
-    // empty space on a panel is a handle: hold to carry the menu around
+    // empty space on a panel still carries too; the pill is the visible spot
     else menuGrab = {hand};
   }
 }
@@ -1804,6 +1837,12 @@ async function start(id, pre){
     });
     guard('pollGamepads', () => pollGamepads(dt, frame));
     guard('pollVAD', pollVAD);
+    // ✕ must hide the menu itself, not just the lasers: input and drawing were
+    // gated on menuOn but nothing ever hid the panel meshes. holder.visible
+    // stays the logical open/closed state; menuOn masks the lot.
+    guard('menuVis', () => {
+      for (const k in panels) if (panels[k].mesh) panels[k].mesh.visible = menuOn;
+    });
     guard('updatePointers', updatePointers);
     guard('highway', updateHighway);
     if (menuOn && (needDraw || now > tick)){
