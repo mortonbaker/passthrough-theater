@@ -20,7 +20,10 @@ import wave
 
 import numpy as np
 
-AUDIO_EXT = {".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg", ".webm"}
+# MeTube writes whatever container the source used, so accept video ones too;
+# ffmpeg pulls the audio stream out either way.
+AUDIO_EXT = {".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg",
+             ".webm", ".mkv", ".mp4"}
 SR = 44100
 
 # Pattern vocabulary, slowest to fastest. "div" is beats per cue: 2 = every
