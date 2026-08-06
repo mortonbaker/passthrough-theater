@@ -71,7 +71,7 @@ const KIND = {rest:'#555566', slow:'#38bdf8', steady:'#4ade80', double:'#fbbf24'
 let ctx=null, src=null, gain=null, analyser=null, freq=null;
 let buffer=null, chart=null, startAt=0, playing=false, offset=0;
 let tracks=[], idx=-1, lead=2.6, noteSize=14, vol=0.8;
-let session=null, sIdx=-1, gap=10, gapUntil=0, stage='';
+let session=null, sIdx=-1, gap=10, gapUntil=0, stage='', gapTimer=null;
 
 async function load(){
   try {
@@ -90,7 +90,7 @@ async function load(){
 }
 
 async function pick(i){
-  stop();
+  stopSession();                 // picking a track by hand exits session mode
   idx = i;
   [...document.querySelectorAll('.tr')].forEach((e,k) => e.classList.toggle('on', k===i));
   const t = tracks[i];
@@ -148,7 +148,12 @@ async function startSession(){
     nextInSession();
   } catch(e){ say('session failed: ' + (e.message||e), true); }
 }
-function stopSession(){ session=null; sIdx=-1; stage=''; gapUntil=0; stop(); }
+function stopSession(){
+  // clear the pending gap timer too: left armed, it advances the NEXT session
+  // if one is started inside the old session's gap
+  if (gapTimer){ clearTimeout(gapTimer); gapTimer=null; }
+  session=null; sIdx=-1; stage=''; gapUntil=0; stop();
+}
 
 async function nextInSession(){
   if (!session) return;
@@ -178,7 +183,7 @@ async function nextInSession(){
       if (!session) return;
       // the gap between tracks is the valley: a real stop resets the baseline
       gapUntil = performance.now() + gap*1000;
-      setTimeout(nextInSession, gap*1000);
+      gapTimer = setTimeout(nextInSession, gap*1000);
     };
   } catch(e){ say('track failed: ' + (e.message||e), true); }
 }

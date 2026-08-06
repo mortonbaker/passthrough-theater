@@ -455,7 +455,7 @@ function drawBar(p){
   c.fillText(title, 180, 84);
   c.fillStyle = C.dim; c.font = '26px system-ui'; c.textAlign = 'right';
   c.fillText(clock(), 810, 84); c.textAlign = 'left';
-  btn(c, w('rhy'), '♪', {on:rhyPlaying, hover:hov('rhy'), font:'34px'});
+  btn(c, w('rhy'), '♪', {on:rhyPlaying || !!rhySession, hover:hov('rhy'), font:'34px'});
   icon(c, w('ctr'),  'target', {hover:hov('ctr')});
   icon(c, w('mic'),  'mic', {on:listening, onColor:C.rec, hover:hov('mic')});
   if (advMode) icon(c, w('gear'), 'gear', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
@@ -814,6 +814,11 @@ let rhyBuffer=null, rhyChart=null, rhyStartAt=0, rhyPlaying=false;
 let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null;
 let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='', rhyNotedOnce=false;
 let musicVol = parseFloat(localStorage.getItem('musicVol') || '0.8');
+// session mode: rhyRun is a generation token — bumped on every start/stop, so a
+// track still decoding (or a gap timer still pending) from a replaced run can
+// check it and bail instead of stomping the new run's playback
+let rhySession=null, rhySIdx=-1, rhyGapTimer=null, rhyRun=0, rhyOffset=0;
+let rhyMins = parseInt(localStorage.getItem('rhyMins') || '10', 10);
 
 const RHY = {
   yaw: -42,           // off to the left, per operator preference
@@ -834,7 +839,7 @@ const KIND_COLOR = {
 
 function rhyTime(){
   if (!rhyCtx || !rhyPlaying) return 0;
-  return rhyCtx.currentTime - rhyStartAt;
+  return rhyCtx.currentTime - rhyStartAt + rhyOffset;
 }
 
 async function rhyLoadList(){
@@ -870,9 +875,10 @@ async function rhyLoad(i){
   needDraw = true;
 }
 
-function rhyStart(){
+function rhyStart(from){
   if (!rhyBuffer || !rhyCtx) return;
   rhyStop();
+  rhyOffset = Math.max(0, Math.min(from || 0, rhyBuffer.duration - 1));
   rhySrc = rhyCtx.createBufferSource();
   rhySrc.buffer = rhyBuffer;
   rhyGain = rhyCtx.createGain();
@@ -884,10 +890,11 @@ function rhyStart(){
   rhySrc.connect(rhyGain).connect(rhyAnalyser).connect(rhyCtx.destination);
   // schedule slightly ahead so the clock reference is exact, not approximate
   const at = rhyCtx.currentTime + 0.08;
-  rhySrc.start(at);
+  rhySrc.start(at, rhyOffset);
   rhyStartAt = at;
   rhyPlaying = true; rhyNotedOnce = false;
-  rhySrc.onended = () => { rhyPlaying = false; needDraw = true; };
+  rhySrc.onended = () => { rhyPlaying = false;
+    if (video) video.volume = videoVol; needDraw = true; };
   if (video) video.volume = videoVol * 0.35;      // music leads during a run
   beacon('RHY start');
   needDraw = true;
@@ -900,6 +907,88 @@ function rhyStop(){
   try { rhySrc && rhySrc.disconnect(); } catch(e){}
   rhySrc = null; rhyPlaying = false;
   if (video) video.volume = videoVol;
+  needDraw = true;
+}
+
+/* ---- session mode: the bench's runner on the same plan and clock ---- */
+const RHY_GAP = 10;                      // the valley between tracks, seconds
+const RHY_MINS = [7, 10, 15, 20];        // cycled by the mins button
+
+async function rhyStartSession(){
+  rhyStopSession();
+  const run = rhyRun;
+  try {
+    rhyStatus = 'planning session…'; needDraw = true;
+    if (!rhyCtx) rhyCtx = new (window.AudioContext||window.webkitAudioContext)();
+    if (rhyCtx.state === 'suspended') await rhyCtx.resume();
+    const j = await (await fetch('/session?mins=' + rhyMins)).json();
+    if (run !== rhyRun) return;
+    if (j.error){ rhyStatus = 'plan failed: ' + j.error; needDraw = true; return; }
+    rhySession = j.tracks; rhySIdx = -1;
+    rhyStatus = 'session: ' + j.minutes + ' min · ' + rhySession.length + ' tracks';
+    beacon('RHY session ' + j.minutes + 'min ' + rhySession.length + ' tracks');
+    rhyNextInSession();
+  } catch(e){
+    if (run === rhyRun){ rhyStatus = 'session failed: ' + (e.message||e); needDraw = true; }
+    report('rhySession', e);
+  }
+}
+function rhyStopSession(){
+  rhyRun++;                              // invalidate in-flight loads and timers
+  rhySession = null; rhySIdx = -1;
+  if (rhyGapTimer){ clearTimeout(rhyGapTimer); rhyGapTimer = null; }
+  rhyStop();
+}
+async function rhyNextInSession(){
+  if (!rhySession) return;
+  const run = rhyRun;
+  rhySIdx++;
+  if (rhySIdx >= rhySession.length){
+    rhyStatus = 'session complete'; beacon('RHY session complete');
+    rhyStopSession(); return;
+  }
+  const t = rhySession[rhySIdx];
+  const stage = t.label + ' · ' + (rhySIdx+1) + '/' + rhySession.length;
+  try {
+    rhyStatus = stage + ' · loading ' + t.title; needDraw = true;
+    if (rhyCtx.state === 'suspended') await rhyCtx.resume();
+    const raw = await fetch(t.url).then(r => {
+      if (!r.ok) throw new Error('track HTTP ' + r.status);
+      return r.arrayBuffer();
+    });
+    const buf = await rhyCtx.decodeAudioData(raw);
+    if (run !== rhyRun) return;            // stopped or replaced while loading
+    if (!Array.isArray(t.cues)){
+      rhyStatus = 'no cues in plan for ' + t.title;
+      beacon('RHY ERR no cues ' + t.title);
+      return;
+    }
+    rhyBuffer = buf;
+    // the session's own cue list, generated at this track's tier
+    rhyChart = {title:t.title, bpm:t.bpm, duration:t.duration,
+                cues:t.cues, sections:t.sections || [], beats:[]};
+    rhyTrackIdx = rhyTracks.findIndex(x => x.name === t.name);
+    // start just before the drums: a cold intro reads as 'nothing is happening'
+    const from = Math.max(0, (t.grooveStart || 0) - 2.5);
+    rhyStatus = stage + ' · ' + t.title + (from > 1 ? ' (' + from.toFixed(0) + 's in)' : '');
+    beacon('RHY track ' + (rhySIdx+1) + '/' + rhySession.length + ' ' + t.title
+      + ' cues=' + t.cues.length + ' from=' + from.toFixed(1));
+    rhyStart(from);
+    rhySrc.onended = () => {
+      rhyPlaying = false; needDraw = true;
+      if (run !== rhyRun || !rhySession) return;
+      if (rhySIdx + 1 >= rhySession.length){
+        rhyStatus = 'session complete'; beacon('RHY session complete');
+        rhyStopSession(); return;
+      }
+      // the gap between tracks is the valley: a real stop resets the baseline
+      rhyStatus = 'rest · next in ' + RHY_GAP + 's';
+      rhyGapTimer = setTimeout(rhyNextInSession, RHY_GAP*1000);
+    };
+  } catch(e){
+    if (run === rhyRun){ rhyStatus = 'track failed: ' + (e.message||e); }
+    report('rhySession', e);
+  }
   needDraw = true;
 }
 
@@ -1026,9 +1115,11 @@ function updateHighway(){
 /* ---- rhythm track panel ---- */
 const RHY_CW = 1100, RHY_ROWS = 7;
 const RHYW = [];
-RHYW.push({id:'rhy_close', type:'btn', x:900, y:28, w:160, h:66});
-RHYW.push({id:'rhy_play',  type:'btn', x:40,  y:28, w:190, h:66});
-RHYW.push({id:'rhy_vol',   type:'slider', x:420, y:44, w:420, h:56,
+RHYW.push({id:'rhy_close',   type:'btn', x:900, y:28, w:160, h:66});
+RHYW.push({id:'rhy_session', type:'btn', x:40,  y:28, w:200, h:66});
+RHYW.push({id:'rhy_play',    type:'btn', x:252, y:28, w:130, h:66});
+RHYW.push({id:'rhy_mins',    type:'btn', x:394, y:28, w:100, h:66});
+RHYW.push({id:'rhy_vol',     type:'slider', x:590, y:44, w:230, h:56,
   get:()=>musicVol,
   set:v=>{ musicVol=v; if (rhyGain) rhyGain.gain.value=v;
            localStorage.setItem('musicVol', v); }});
@@ -1042,8 +1133,11 @@ function drawRhythm(p){
   const w = id => RHYW.find(x => x.id === id);
   c.fillStyle = C.txt; c.font = '34px system-ui';
   c.fillText('rhythm', 40, 118);
-  btn(c, w('rhy_play'), rhyPlaying ? 'stop' : 'start',
-      {on:rhyPlaying, hover:hov('rhy_play'), font:'28px'});
+  btn(c, w('rhy_session'), rhySession ? 'stop session' : 'session',
+      {on:!!rhySession, hover:hov('rhy_session'), font:'26px'});
+  btn(c, w('rhy_play'), rhyPlaying && !rhySession ? 'stop' : 'start',
+      {on:rhyPlaying && !rhySession, hover:hov('rhy_play'), font:'26px'});
+  btn(c, w('rhy_mins'), rhyMins + 'm', {hover:hov('rhy_mins'), font:'26px'});
   slider(c, w('rhy_vol'), musicVol, {hover:hov('rhy_vol'), label:'music',
          value:Math.round(musicVol*100)+'%'});
   btn(c, w('rhy_close'), 'close', {hover:hov('rhy_close'), font:'26px'});
@@ -1134,7 +1228,11 @@ function widgetClickInner(p, w){
   if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
   if (w.sort){ libSort = w.sort; localStorage.setItem('libSort', libSort); libApply(); return; }
   if (w.trk !== undefined){
-    if (rhyTracks[w.trk]) rhyLoad(w.trk).then(() => rhyStart());
+    if (rhyTracks[w.trk]){
+      rhyStopSession();                    // picking a track exits session mode
+      const run = rhyRun;
+      rhyLoad(w.trk).then(() => { if (run === rhyRun) rhyStart(); });
+    }
     return;
   }
   if (w.cell !== undefined){
@@ -1158,7 +1256,14 @@ function widgetClickInner(p, w){
       }
       break;
     case 'rhy_close': panels.rhythm.holder.visible = false; break;
-    case 'rhy_play':  rhyPlaying ? rhyStop() : rhyStart(); break;
+    case 'rhy_play':
+      rhySession ? rhyStopSession() : (rhyPlaying ? rhyStop() : rhyStart());
+      break;
+    case 'rhy_session': rhySession ? rhyStopSession() : rhyStartSession(); break;
+    case 'rhy_mins':
+      rhyMins = RHY_MINS[(RHY_MINS.indexOf(rhyMins) + 1) % RHY_MINS.length];
+      localStorage.setItem('rhyMins', rhyMins);
+      break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  micOn ? pttStop() : pttStart(); break;
@@ -1675,6 +1780,7 @@ function cleanup(){
     if (o.material && o.material.map && o.material.map.isCanvasTexture) o.material.map.dispose();
     if (o.material && o.material.dispose) o.material.dispose();
   }); }catch(e){}
+  try{ rhyStopSession(); }catch(e){}     // leaving VR must not strand a session
   try{ recStop(); }catch(e){}
   try{ micStream && micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
   try{ vadCtx && vadCtx.close(); }catch(e){}
