@@ -185,6 +185,19 @@ def label_for(interval):
     return "fast"
 
 
+def snap_bars(secs, beats, phase=0, bars=1):
+    """Pull section edges onto bar lines, so a change of pace lands on a bar."""
+    if len(beats) < 8:
+        return secs
+    downs = [beats[i] for i in range(phase, len(beats), 4 * bars)]
+    if not downs:
+        return secs
+    for s in secs:
+        s["t"] = min(downs, key=lambda d: abs(d - s["t"]))
+        s["end"] = min(downs, key=lambda d: abs(d - s["end"]))
+    return [s for s in secs if s["end"] > s["t"]]
+
+
 def session_arc(duration, energy, beats, rounds=3, start=2.0, tier=1.0):
     """Build rounds of climb, peak and rest rather than tracking the music.
 
@@ -240,7 +253,97 @@ def session_arc(duration, energy, beats, rounds=3, start=2.0, tier=1.0):
     return secs
 
 
-def cues(beats, secs):
+def downbeat_phase(beats, strength):
+    """Which of every four beats carries the bar.
+
+    Kick drums land on the downbeat, so the phase whose beats are consistently
+    strongest is the one the bar starts on. Everything else anchors to this.
+    """
+    if not beats or not strength:
+        return 0
+    best, phase = -1.0, 0
+    for p in range(4):
+        vals = [strength[i] for i in range(p, len(strength), 4)]
+        if vals:
+            score = sum(vals) / len(vals)
+            if score > best:
+                best, phase = score, p
+    return phase
+
+
+# Cues may only land on these fractions of a beat. Anything else reads as
+# syncopation: 4 = one per bar, 1 = every beat, 0.5 = eighths.
+MULTIPLES = [8.0, 4.0, 2.0, 1.0, 0.5]
+
+
+def cues(beats, hits, secs, phase=0):
+    """Place cues on metrical positions, not on a stopwatch.
+
+    Walking by absolute seconds drifts across the bar - 2.0s at 130bpm is 4.33
+    beats - so cues land in a different part of the bar each time. Choose the
+    beat multiple closest to the intended pace instead, and step whole beats
+    from a downbeat.
+    """
+    if len(beats) < 2:
+        return []
+    spacing = (beats[-1] - beats[0]) / max(1, len(beats) - 1)
+    hitset = sorted(hits or beats)
+
+    def has_hit(t, tol):
+        lo, hi = 0, len(hitset) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if abs(hitset[mid] - t) <= tol:
+                return True
+            if hitset[mid] < t:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return False
+
+    out = []
+    for sec in secs:
+        iv = sec.get("interval", 0)
+        if iv <= 0:
+            continue
+        # nearest musical subdivision to the intended pace
+        mult = min(MULTIPLES, key=lambda m: abs(m * spacing - iv))
+        sec["beats_per_cue"] = mult
+
+        # first beat of the section that starts a bar
+        i0 = 0
+        while i0 < len(beats) and beats[i0] < sec["t"]:
+            i0 += 1
+        while i0 < len(beats) and (i0 % 4) != phase:
+            i0 += 1
+
+        if mult >= 1:
+            step = int(mult)
+            i = i0
+            while i < len(beats) and beats[i] <= sec["end"]:
+                out.append({"t": round(beats[i], 3), "kind": sec["pattern"]})
+                i += step
+        else:                                  # eighths: beat plus its midpoint
+            i = i0
+            while i + 1 < len(beats) and beats[i] <= sec["end"]:
+                a, b = beats[i], beats[i + 1]
+                out.append({"t": round(a, 3), "kind": sec["pattern"]})
+                mid = a + (b - a) / 2
+                # only subdivide where something actually plays on the offbeat
+                if mid <= sec["end"] and has_hit(mid, spacing * 0.22):
+                    out.append({"t": round(mid, 3), "kind": sec["pattern"]})
+                i += 1
+
+    out.sort(key=lambda c: c["t"])
+    kept = []
+    for c in out:
+        if kept and c["t"] - kept[-1]["t"] < MIN_GAP:
+            continue
+        kept.append(c)
+    return kept
+
+
+def _unused_cues(beats, secs):
     # 'beats' here is already filtered to beats with a drum on them, so a
     # cue can never land in a passage with nothing to hit.
     """Walk each section at its interval, snapping to the nearest real beat."""
@@ -280,8 +383,10 @@ def build(path, force=False):
     hits = percussive_beats(beats, onsets, strength)
     if len(hits) < 8:                     # nothing percussive: fall back
         hits = beats
+    phase = downbeat_phase(beats, strength)
     start = first_groove(beats, hits)
     secs = session_arc(len(sig) / SR, energy, hits, start=start)
+    secs = snap_bars(secs, beats, phase)
     chart = {
         "title": os.path.splitext(os.path.basename(path))[0],
         "duration": round(len(sig) / SR, 2),
@@ -291,7 +396,8 @@ def build(path, force=False):
         "grooveStart": round(start, 2),
         "energy": [round(e, 3) for e in energy],
         "sections": secs,
-        "cues": cues(hits, secs),
+        "phase": phase,
+        "cues": cues(beats, hits, secs, phase),
     }
     with open(dest, "w", encoding="utf-8") as fh:
         json.dump(chart, fh, indent=1)
@@ -328,6 +434,7 @@ def plan(charts, minutes=7.0):
         tier = i / max(1, len(chosen) - 1)
         secs = session_arc(c["duration"], c.get("energy") or [], c["hits"],
                            start=c.get("grooveStart", 2.0), tier=tier)
+        secs = snap_bars(secs, c.get("beats") or c["hits"], c.get("phase", 0))
         out.append({
             "name": c["name"], "title": c["title"], "bpm": c["bpm"],
             "duration": c["duration"], "tier": round(tier, 2),
@@ -335,7 +442,7 @@ def plan(charts, minutes=7.0):
             "label": ["warm up", "building", "relentless"][
                 min(2, int(tier * 2.99))],
             "sections": secs,
-            "cues": cues(c["hits"], secs),
+    
         })
     return out
 
