@@ -17,16 +17,21 @@ echo "== checking player syntax =="
 # write the extracted module with an explicit encoding: piping through stdout
 # fails on Windows, where the default codec cannot represent the UI glyphs
 CHECK="$HERE/.syntax-check.mjs"
-"$PY" - "$HERE/player/index.html" "$CHECK" <<'EOF'
+# Check every page with an inline module, not just index.html: highway.html
+# shipped with a broken string once because it was outside this loop.
+for PAGE in player/index.html player/highway.html; do
+  [ -f "$HERE/$PAGE" ] || continue
+  "$PY" - "$HERE/$PAGE" "$CHECK" <<'EOF'
 import sys
 s = open(sys.argv[1], encoding='utf-8').read()
 js = s.split('<script type="module">', 1)[1].rsplit('</script>', 1)[0]
 js = js.replace("import * as THREE from './three.module.js';", "const THREE={MathUtils:{}};")
 open(sys.argv[2], 'w', encoding='utf-8', newline='').write(js)
 EOF
-node --check "$CHECK" || { rm -f "$CHECK"; echo "player has a syntax error; not deploying" >&2; exit 1; }
+  node --check "$CHECK" || { rm -f "$CHECK"; echo "$PAGE has a syntax error; not deploying" >&2; exit 1; }
+  echo "   $PAGE OK"
+done
 rm -f "$CHECK"
-echo "   player OK"
 
 echo "== checking server syntax =="
 "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$HERE/deovr_server.py" \

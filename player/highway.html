@@ -257,10 +257,8 @@ function frame(){
 
   const inGap = gapUntil && performance.now() < gapUntil;
   $('hud').textContent =
-    (session ? 'stage     ' + stage + '
-' : '') +
-    (inGap ? 'GAP       ' + ((gapUntil-performance.now())/1000).toFixed(0) + 's to next
-' : '') +
+    (session ? 'stage     ' + stage + '\n' : '') +
+    (inGap ? 'GAP       ' + ((gapUntil-performance.now())/1000).toFixed(0) + 's to next\n' : '') +
     'time      ' + t.toFixed(2) + ' s\n' +
     'playing   ' + playing + '\n' +
     'cues      ' + (chart ? chart.cues.length : 0) + '\n' +
