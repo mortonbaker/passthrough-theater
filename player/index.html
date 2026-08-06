@@ -954,9 +954,23 @@ function buildHighway(){
 const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(),
       _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
 
+let rhyDiagAt = 0, rhyDiagSeen = {};
+function rhyDiag(msg){ if (rhyDiagSeen[msg]) return; rhyDiagSeen[msg] = 1;
+  beacon('RHY halt: ' + msg); }
 function updateHighway(){
-  if (!rhyRoot || !rhyRoot.visible) return;
+  if (!rhyRoot){ rhyDiag('no rhyRoot'); return; }
+  if (!rhyRoot.visible){ rhyDiag('rhyRoot hidden'); return; }
   const t = rhyTime();
+  if (rhyPlaying && performance.now() > rhyDiagAt){
+    rhyDiagAt = performance.now() + 3000;
+    const cs = rhyChart && rhyChart.cues;
+    beacon('RHY diag t=' + t.toFixed(2)
+      + ' chart=' + (!!rhyChart) + ' playing=' + rhyPlaying
+      + ' cues=' + (cs ? cs.length : 'none')
+      + ' first=' + (cs && cs.length ? cs[0].t : 'n/a')
+      + ' notesAlloc=' + (rhyNotes ? rhyNotes.instanceMatrix.count : 'none')
+      + ' lead=' + RHY.lead);
+  }
 
   // notes
   let n = 0;
