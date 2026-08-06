@@ -312,14 +312,14 @@ def plan(charts, minutes=7.0):
         return len(c["hits"]) / max(1.0, c["duration"])
     usable.sort(key=density)
 
-    target, chosen, total = minutes * 60.0, [], 0.0
-    for c in usable:
-        if total >= target:
-            break
-        chosen.append(c)
-        total += c["duration"]
-    if len(chosen) < 2 and len(usable) > 1:
-        chosen = usable[:2]
+    # Three stages is the point - warm up, build, relentless - so aim for at
+    # least three tracks even if that overshoots the requested length a little.
+    target = minutes * 60.0
+    want = max(3, min(len(usable), int(round(target / 190.0))))
+    step = max(1, len(usable) // want)
+    chosen = usable[::step][:want] if len(usable) > want else usable[:want]
+    if len(chosen) < min(3, len(usable)):
+        chosen = usable[:min(3, len(usable))]
 
     # re-order so the calmest opens and the busiest closes
     chosen.sort(key=density)
