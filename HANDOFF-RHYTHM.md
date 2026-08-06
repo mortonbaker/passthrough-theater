@@ -329,6 +329,29 @@ batch pipeline, not live vision:
 Build `1786012205`. Headset test: play a transcribed video, ask Mariko about
 what's on screen.
 
+## Addendum 7 — same day: the 2900p files exceed the headset's decode budget
+
+Two new SLR downloads (5800×2900@60) load metadata but never play. Not a
+codec-family problem — the working library files are **also HEVC Main
+yuv420p@60**; the only delta is pixel rate (~1009 MP/s vs ~560). The
+headset's HEVC decoder ceiling sits between those. Fix: `retier.sh` (repo)
+re-tiers on spark's NVENC to the proven envelope — HEVC 4320×2160@60 at
+20 Mbps VBR (better than SLR's own 6 Mbps 2160p tier), `hvc1` tag,
+faststart — installs on atlas01, retires the original to
+`/srv/deovr/masters/`, and carries the scenes sidecar to the new id.
+Transcode speed ~1.25× realtime while the scenes batch owns the compute
+side. `ZZSAMPLE_*` = 3-minute envelope check in the library.
+
+**Trap found on the way (lesson): `/deovr` titles are prettified —
+underscores become spaces. Never match or reconstruct filenames from
+titles; resolve the real name via `/video/<id>` →
+`encodings[0].videoSources[0].url`.** Both retier and its runner do this
+now.
+
+Ingest guidance: SLR tiers at or under 4320×2160@60 play natively; anything
+bigger needs a retier pass (`~/theater-scenes/run_retier.sh` on spark does
+every `_2900p_` file and pings ntfy per file).
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
