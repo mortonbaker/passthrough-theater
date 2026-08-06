@@ -416,6 +416,7 @@ const BAR = [
   // row 1 - library and title on the left, utilities and exit on the right,
   // the way DeoVR arranges its bar: navigation on top, transport below
   {id:'lib',   type:'btn', x:40,   y:30,  w:110, h:84},
+  {id:'rhy',   type:'btn', x:718,  y:30,  w:96,  h:84},
   {id:'ctr',   type:'btn', x:826,  y:30,  w:96,  h:84},
   {id:'mic',   type:'btn', x:934,  y:30,  w:150, h:84},
   {id:'gear',  type:'btn', x:1096, y:30,  w:96,  h:84},
@@ -454,6 +455,7 @@ function drawBar(p){
   c.fillText(title, 180, 84);
   c.fillStyle = C.dim; c.font = '26px system-ui'; c.textAlign = 'right';
   c.fillText(clock(), 810, 84); c.textAlign = 'left';
+  btn(c, w('rhy'), '♪', {on:rhyPlaying, hover:hov('rhy'), font:'34px'});
   icon(c, w('ctr'),  'target', {hover:hov('ctr')});
   icon(c, w('mic'),  'mic', {on:listening, onColor:C.rec, hover:hov('mic')});
   if (advMode) icon(c, w('gear'), 'gear', {on:panels.adv && panels.adv.holder.visible, hover:hov('gear')});
@@ -803,6 +805,241 @@ async function saveSidecar(){
   saveNote = r.ok ? 'saved' : 'save failed'; noteUntil = performance.now()+2500; needDraw=true;
 }
 
+/* ============================ rhythm ============================ */
+// Everything here is timed off AudioContext.currentTime, never the frame clock.
+// Frame time drifts within seconds; the audio clock is the only thing the notes
+// and the music can both agree on.
+let rhyCtx=null, rhySrc=null, rhyGain=null, rhyAnalyser=null, rhyFreq=null;
+let rhyBuffer=null, rhyChart=null, rhyStartAt=0, rhyPlaying=false;
+let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null;
+let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='';
+let musicVol = parseFloat(localStorage.getItem('musicVol') || '0.8');
+
+const RHY = {
+  yaw: -42,           // off to the left, per operator preference
+  dist: 1.45,
+  lead: 2.6,          // seconds of chart visible above the hit line
+  laneH: 1.30,        // metres from hit line to the top of the lane
+  laneW: 0.44,
+  noteH: 0.045,
+  bars: 24,           // spectrum bars along the lane foot
+};
+const KIND_COLOR = {
+  rest:   0x555566,
+  slow:   0x38bdf8,
+  steady: 0x4ade80,
+  double: 0xfbbf24,
+  fast:   0xf87171,
+};
+
+function rhyTime(){
+  if (!rhyCtx || !rhyPlaying) return 0;
+  return rhyCtx.currentTime - rhyStartAt;
+}
+
+async function rhyLoadList(){
+  try {
+    const j = await (await fetch('/music')).json();
+    rhyTracks = (j.tracks || []).filter(t => t.charted);
+    rhyStatus = rhyTracks.length ? (rhyTracks.length + ' tracks') : 'no charted tracks';
+  } catch(e){ rhyStatus = 'music list failed'; }
+  needDraw = true;
+}
+
+async function rhyLoad(i){
+  const t = rhyTracks[i];
+  if (!t) return;
+  rhyStop();
+  rhyTrackIdx = i;
+  rhyStatus = 'loading ' + (t.title || t.name);
+  needDraw = true;
+  try {
+    if (!rhyCtx) rhyCtx = new (window.AudioContext||window.webkitAudioContext)();
+    if (rhyCtx.state === 'suspended') await rhyCtx.resume();
+    const [buf, chart] = await Promise.all([
+      fetch(t.url).then(r => r.arrayBuffer()).then(a => rhyCtx.decodeAudioData(a)),
+      fetch(t.chartUrl).then(r => r.json()),
+    ]);
+    rhyBuffer = buf; rhyChart = chart;
+    rhyStatus = `${chart.title} · ${chart.bpm} bpm · ${chart.cues.length} cues`;
+    beacon('RHY loaded ' + chart.title + ' bpm=' + chart.bpm + ' cues=' + chart.cues.length);
+  } catch(e){
+    rhyStatus = 'load failed: ' + (e.message||e);
+    report('rhyLoad', e);
+  }
+  needDraw = true;
+}
+
+function rhyStart(){
+  if (!rhyBuffer || !rhyCtx) return;
+  rhyStop();
+  rhySrc = rhyCtx.createBufferSource();
+  rhySrc.buffer = rhyBuffer;
+  rhyGain = rhyCtx.createGain();
+  rhyGain.gain.value = musicVol;
+  rhyAnalyser = rhyCtx.createAnalyser();
+  rhyAnalyser.fftSize = 128;
+  rhyAnalyser.smoothingTimeConstant = 0.75;
+  rhyFreq = new Uint8Array(rhyAnalyser.frequencyBinCount);
+  rhySrc.connect(rhyGain).connect(rhyAnalyser).connect(rhyCtx.destination);
+  // schedule slightly ahead so the clock reference is exact, not approximate
+  const at = rhyCtx.currentTime + 0.08;
+  rhySrc.start(at);
+  rhyStartAt = at;
+  rhyPlaying = true;
+  rhySrc.onended = () => { rhyPlaying = false; needDraw = true; };
+  if (video) video.volume = videoVol * 0.35;      // music leads during a run
+  beacon('RHY start');
+  needDraw = true;
+}
+function rhyStop(){
+  try { rhySrc && rhySrc.stop(); } catch(e){}
+  try { rhySrc && rhySrc.disconnect(); } catch(e){}
+  rhySrc = null; rhyPlaying = false;
+  if (video) video.volume = videoVol;
+  needDraw = true;
+}
+
+function buildHighway(){
+  rhyRoot = new THREE.Group();
+  rhyRoot.rotation.order = 'YXZ';
+  rhyRoot.rotation.y = rad(RHY.yaw);
+
+  // lane backing, slightly transparent so the room still reads through it
+  const lane = new THREE.Mesh(
+    new THREE.PlaneGeometry(RHY.laneW, RHY.laneH),
+    new THREE.MeshBasicMaterial({color:0x0a0a12, transparent:true, opacity:0.42,
+      depthTest:false, depthWrite:false, side:THREE.DoubleSide}));
+  lane.position.set(0, RHY.laneH/2 - 0.35, -RHY.dist);
+  lane.renderOrder = 6;
+  rhyRoot.add(lane);
+
+  // hit line at the near end
+  rhyLine = new THREE.Mesh(
+    new THREE.PlaneGeometry(RHY.laneW * 1.12, 0.012),
+    new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.9,
+      depthTest:false, depthWrite:false, side:THREE.DoubleSide}));
+  rhyLine.position.set(0, -0.35, -RHY.dist + 0.002);
+  rhyLine.renderOrder = 9;
+  rhyRoot.add(rhyLine);
+
+  // notes: one instanced mesh, repositioned per frame from the audio clock
+  const noteGeo = new THREE.PlaneGeometry(RHY.laneW * 0.82, RHY.noteH);
+  const noteMat = new THREE.MeshBasicMaterial({transparent:true, depthTest:false,
+    depthWrite:false, side:THREE.DoubleSide, vertexColors:true});
+  rhyNotes = new THREE.InstancedMesh(noteGeo, noteMat, 96);
+  rhyNotes.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(96*3), 3);
+  rhyNotes.renderOrder = 8;
+  rhyNotes.count = 0;
+  rhyRoot.add(rhyNotes);
+
+  // spectrum bars along the foot of the lane
+  const barGeo = new THREE.PlaneGeometry(RHY.laneW/RHY.bars * 0.7, 1);
+  const barMat = new THREE.MeshBasicMaterial({color:0x3d8bff, transparent:true,
+    opacity:0.85, depthTest:false, depthWrite:false, side:THREE.DoubleSide});
+  rhyBars = new THREE.InstancedMesh(barGeo, barMat, RHY.bars);
+  rhyBars.renderOrder = 7;
+  rhyRoot.add(rhyBars);
+
+  rhyRoot.visible = false;
+  return rhyRoot;
+}
+
+const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(),
+      _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
+
+function updateHighway(){
+  if (!rhyRoot || !rhyRoot.visible) return;
+  const t = rhyTime();
+
+  // notes
+  let n = 0;
+  if (rhyChart && rhyPlaying){
+    const cues = rhyChart.cues;
+    // cues are sorted, so walk only the visible window
+    for (let i = 0; i < cues.length && n < 96; i++){
+      const dt = cues[i].t - t;
+      if (dt < -0.15) continue;
+      if (dt > RHY.lead) break;
+      const y = -0.35 + (dt / RHY.lead) * RHY.laneH;
+      _p.set(0, y, -RHY.dist + 0.004);
+      _s.set(1, 1, 1);
+      _m4.compose(_p, _q, _s);
+      rhyNotes.setMatrixAt(n, _m4);
+      _c.setHex(KIND_COLOR[cues[i].kind] || 0xffffff);
+      // fade in at the far end so notes arrive rather than pop
+      const a = Math.min(1, (1 - dt / RHY.lead) * 1.8 + 0.15);
+      rhyNotes.setColorAt(n, _c.multiplyScalar(a));
+      n++;
+    }
+  }
+  rhyNotes.count = n;
+  if (n){
+    rhyNotes.instanceMatrix.needsUpdate = true;
+    if (rhyNotes.instanceColor) rhyNotes.instanceColor.needsUpdate = true;
+  }
+
+  // spectrum
+  if (rhyAnalyser && rhyPlaying){
+    rhyAnalyser.getByteFrequencyData(rhyFreq);
+    const step = Math.max(1, Math.floor(rhyFreq.length / RHY.bars));
+    for (let i = 0; i < RHY.bars; i++){
+      let sum = 0;
+      for (let k = 0; k < step; k++) sum += rhyFreq[i*step + k] || 0;
+      const v = (sum / step) / 255;
+      const h = Math.max(0.004, v * 0.22);
+      _p.set((i/(RHY.bars-1) - 0.5) * RHY.laneW, -0.36 - h/2, -RHY.dist + 0.006);
+      _s.set(1, h, 1);
+      _m4.compose(_p, _q, _s);
+      rhyBars.setMatrixAt(i, _m4);
+    }
+    rhyBars.instanceMatrix.needsUpdate = true;
+  }
+}
+
+
+/* ---- rhythm track panel ---- */
+const RHY_CW = 1100, RHY_ROWS = 7;
+const RHYW = [];
+RHYW.push({id:'rhy_close', type:'btn', x:900, y:28, w:160, h:66});
+RHYW.push({id:'rhy_play',  type:'btn', x:40,  y:28, w:190, h:66});
+RHYW.push({id:'rhy_vol',   type:'slider', x:420, y:44, w:420, h:56,
+  get:()=>musicVol,
+  set:v=>{ musicVol=v; if (rhyGain) rhyGain.gain.value=v;
+           localStorage.setItem('musicVol', v); }});
+for (let i=0;i<RHY_ROWS;i++)
+  RHYW.push({id:'rhy_'+i, type:'btn', trk:i, x:40, y:128+i*82, w:1020, h:72});
+
+function drawRhythm(p){
+  const c = p.ctx, W = p.cv.width, H = p.cv.height;
+  panelBG(c, W, H);
+  const hov = id => p.hover === id;
+  const w = id => RHYW.find(x => x.id === id);
+  c.fillStyle = C.txt; c.font = '34px system-ui';
+  c.fillText('rhythm', 40, 118);
+  btn(c, w('rhy_play'), rhyPlaying ? 'stop' : 'start',
+      {on:rhyPlaying, hover:hov('rhy_play'), font:'28px'});
+  slider(c, w('rhy_vol'), musicVol, {hover:hov('rhy_vol'), label:'music',
+         value:Math.round(musicVol*100)+'%'});
+  btn(c, w('rhy_close'), 'close', {hover:hov('rhy_close'), font:'26px'});
+  c.fillStyle = C.dim; c.font = '24px system-ui';
+  c.fillText(rhyStatus || '', 420, 118);
+  for (let i=0;i<RHY_ROWS;i++){
+    const wd = w('rhy_'+i), t = rhyTracks[i];
+    c.fillStyle = t ? (hov(wd.id) ? '#2b2b34' : '#1b1b21') : '#141418';
+    rr(c, wd.x, wd.y, wd.w, wd.h, 12); c.fill();
+    if (!t) continue;
+    if (i === rhyTrackIdx){ c.strokeStyle = C.accent2; c.lineWidth = 3; c.stroke(); }
+    c.fillStyle = i === rhyTrackIdx ? C.accent : C.txt; c.font = '28px system-ui';
+    let ti = t.title || t.name; if (ti.length > 46) ti = ti.slice(0,45)+'…';
+    c.fillText(ti, wd.x+18, wd.y+46);
+    c.fillStyle = C.dim; c.font = '22px system-ui';
+    c.fillText(Math.round(t.bpm||0) + ' bpm  ·  ' + fmt(t.duration||0)
+               + '  ·  ' + (t.cues||0) + ' cues', wd.x+wd.w-330, wd.y+46);
+  }
+  p.tex.needsUpdate = true;
+}
+
 /* ============================ lasers + hit test ============================ */
 const raycaster = new THREE.Raycaster();
 const tmpM = new THREE.Matrix4();
@@ -829,6 +1066,7 @@ function activePanels(){
   else {
     out.push(panels.bar);
     if (panels.adv && panels.adv.holder.visible) out.push(panels.adv);
+    if (panels.rhythm && panels.rhythm.holder.visible) out.push(panels.rhythm);
   }
   return out.filter(p => p && p.mesh);
 }
@@ -870,6 +1108,10 @@ function widgetClickInner(p, w){
   needDraw = true;
   if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
   if (w.sort){ libSort = w.sort; localStorage.setItem('libSort', libSort); libApply(); return; }
+  if (w.trk !== undefined){
+    if (rhyTracks[w.trk]) rhyLoad(w.trk).then(() => rhyStart());
+    return;
+  }
   if (w.cell !== undefined){
     const item = libFiltered[libPage*LIB_PER + w.cell];
     if (item) playVideo(item.id);            // straight to playback, no detail page
@@ -883,6 +1125,15 @@ function widgetClickInner(p, w){
     case 'hide': menuOn = false; break;
     case 'exit': beacon('EXIT via bar'); if (session) session.end(); break;
     case 'close': screenMode='bar'; syncScreens(); break;
+    case 'rhy':
+      panels.rhythm.holder.visible = !panels.rhythm.holder.visible;
+      if (panels.rhythm.holder.visible){
+        rhyRoot.visible = true;
+        if (!rhyTracks.length) rhyLoadList();
+      }
+      break;
+    case 'rhy_close': panels.rhythm.holder.visible = false; break;
+    case 'rhy_play':  rhyPlaying ? rhyStop() : rhyStart(); break;
     case 'ctr':  centerAt = performance.now() + 3000; break;
     case 'lib':  screenMode='browse'; syncScreens(); break;
     case 'mic':  micOn ? pttStop() : pttStart(); break;
@@ -974,8 +1225,13 @@ function buildUI(){
                        cw:ADV_CW, widgets:ADVW, draw:drawAdv, order:12});
   panels.adv.holder.rotation.y = 0;             // directly above the bar
   panels.adv.holder.visible = false;
+  makePanel('rhythm', {dist:1.4, wDeg:42, hDeg:30, pitch:6,
+                       cw:RHY_CW, widgets:RHYW, draw:drawRhythm, order:12});
+  panels.rhythm.holder.rotation.y = rad(-30);   // beside the highway
+  panels.rhythm.holder.visible = false;
   for (const k in panels) uiRoot.add(panels[k].holder);
   scene.add(uiRoot);
+  uiRoot.add(buildHighway());        // rides the same recentred frame
   syncScreens();
 }
 function rebuildUI(){
@@ -1361,6 +1617,7 @@ async function start(id, pre){
     guard('pollGamepads', () => pollGamepads(dt, frame));
     guard('pollVAD', pollVAD);
     guard('updatePointers', updatePointers);
+    guard('highway', updateHighway);
     if (menuOn && (needDraw || now > tick)){
       guard('draw', () => {
         for (const k in panels) if (panels[k] && panels[k].holder.visible) panels[k].draw(panels[k]);
