@@ -423,10 +423,6 @@ function icon(c, w, name, opt={}){
 /* ============================ playback bar ============================ */
 const BAR_W = 1536;
 const BAR = [
-  // Horizon-OS-style grab handle: a visible pill you point at and hold to
-  // carry the whole menu. The invisible empty-space carry still works; this
-  // is the discoverable spot.
-  {id:'grab',  type:'grab', x:558, y:2, w:420, h:26},
   // row 1 - library and title on the left, utilities and exit on the right,
   // the way DeoVR arranges its bar: navigation on top, transport below
   {id:'lib',   type:'btn', x:40,   y:30,  w:110, h:84},
@@ -454,6 +450,11 @@ const BAR = [
   {id:'cvol',  type:'slider', x:1230, y:266, w:270, h:92,
      get:()=>chatVol, set:v=>{ chatVol=v; replyAudio.volume=v;
        localStorage.setItem('chatVol', v); }},
+  // Horizon-OS-style grab handle: a visible pill you point at and hold to
+  // carry the whole menu. LAST in the list on purpose: hitUI takes the first
+  // widget within tolerance, and the pill's zone brushes the top edge of the
+  // row-1 buttons - listed first it silently stole those clicks as carries.
+  {id:'grab',  type:'grab', x:558, y:2, w:420, h:26},
 ];
 function drawBar(p){
   const c = p.ctx, W = p.cv.width, H = p.cv.height;
@@ -543,7 +544,6 @@ const LIBW = [];
   LIBW.push({id:'k_back',  type:'btn', x:252, y:256, w:150, h:60});
   LIBW.push({id:'k_clear', type:'btn', x:414, y:256, w:150, h:60});
   LIBW.push({id:'close',   type:'btn', x:1400, y:36, w:150, h:64});
-  LIBW.push({id:'grab',    type:'grab', x:590, y:2, w:420, h:26});
   LIBW.push({id:'s_title', type:'btn', sort:'title', x:1000, y:256, w:150, h:60});
   LIBW.push({id:'s_long',  type:'btn', sort:'long',  x:1162, y:256, w:180, h:60});
   LIBW.push({id:'s_short', type:'btn', sort:'short', x:1354, y:256, w:196, h:60});
@@ -554,6 +554,7 @@ const LIBW = [];
   }
   LIBW.push({id:'pg_prev', type:'btn', x:60,  y:1140, w:160, h:64});
   LIBW.push({id:'pg_next', type:'btn', x:232, y:1140, w:160, h:64});
+  LIBW.push({id:'grab',    type:'grab', x:590, y:2, w:420, h:26});  // last: see BAR
 }
 function drawBrowse(p){
   const c = p.ctx, W = p.cv.width, H = p.cv.height;
@@ -1317,6 +1318,7 @@ function widgetClick(p, w){
 }
 function widgetClickInner(p, w){
   needDraw = true;
+  beacon('CLICK ' + w.id);          // input trace: what a click resolved to
   if (w.key !== undefined){ libQuery += w.key; libApply(); return; }
   if (w.sort){ libSort = w.sort; localStorage.setItem('libSort', libSort); libApply(); return; }
   if (w.trk !== undefined){
@@ -1343,6 +1345,8 @@ function widgetClickInner(p, w){
     case 'close': screenMode='bar'; syncScreens(); break;
     case 'rhy':
       panels.rhythm.holder.visible = !panels.rhythm.holder.visible;
+      beacon('RHYPANEL holder=' + panels.rhythm.holder.visible
+        + ' mesh=' + panels.rhythm.mesh.visible + ' menuOn=' + menuOn);
       if (panels.rhythm.holder.visible){
         rhyRoot.visible = true;
         if (!rhyTracks.length) rhyLoadList();
@@ -1491,10 +1495,10 @@ function onSelectStart(hand, ctrl){
                        widget:!!(hit && hit.widget), menuWas:menuOn};
   if (hit){
     if (hit.widget && hit.widget.type==='slider'){ drag={hand, w:hit.widget, panel:hit.panel}; dragTo(hit); }
-    else if (hit.widget && hit.widget.type==='grab') menuGrab = {hand};
+    else if (hit.widget && hit.widget.type==='grab'){ beacon('GRAB pill'); menuGrab = {hand}; }
     else if (hit.widget) widgetClick(hit.panel, hit.widget);
     // empty space on a panel still carries too; the pill is the visible spot
-    else menuGrab = {hand};
+    else { beacon('GRAB space ' + hit.panel.name + ' ' + (hit.cx|0) + ',' + (hit.cy|0)); menuGrab = {hand}; }
   }
 }
 function onSelectEnd(hand){
