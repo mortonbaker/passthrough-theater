@@ -158,7 +158,15 @@ def cues(beats, secs):
                     out.append({"t": round(a + (b - a) * k / sub, 3),
                                 "kind": s["pattern"]})
     out.sort(key=lambda c: c["t"])
-    return out
+    # Coarsening by section average is not enough: detected beats jitter, so
+    # subdividing between two close beats can still land inside the floor.
+    # Enforce it on the finished list, where nothing can slip through.
+    kept = []
+    for c in out:
+        if kept and c["t"] - kept[-1]["t"] < MIN_GAP:
+            continue
+        kept.append(c)
+    return kept
 
 
 def build(path, force=False):
