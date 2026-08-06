@@ -91,76 +91,95 @@ def energy_curve(sig, beats):
     return np.clip((out - lo) / (hi - lo + 1e-9), 0, 1).tolist()
 
 
-def sections(beats, energy, bars=8):
-    """Group beats into bars-long sections and pick a pattern per section."""
-    if not beats:
-        return []
-    per = bars * 4                      # 4/4
-    out = []
-    for start in range(0, len(beats), per):
-        chunk = energy[start:start + per]
-        if not chunk:
-            continue
-        lvl = float(np.mean(chunk))
-        # map mean energy onto the pattern vocabulary
-        if lvl < 0.18:
-            idx = 0
-        elif lvl < 0.38:
-            idx = 1
-        elif lvl < 0.62:
-            idx = 2
-        elif lvl < 0.82:
-            idx = 3
-        else:
-            idx = 4
-        out.append({
-            "t": round(beats[start], 3),
-            "end": round(beats[min(start + per, len(beats)) - 1], 3),
-            "pattern": PATTERNS[idx]["name"],
-            "div": PATTERNS[idx]["div"],
-            "energy": round(lvl, 3),
-        })
-    # merge neighbours that landed on the same pattern
-    merged = []
-    for s in out:
-        if merged and merged[-1]["pattern"] == s["pattern"]:
-            merged[-1]["end"] = s["end"]
-            merged[-1]["energy"] = round((merged[-1]["energy"] + s["energy"]) / 2, 3)
-        else:
-            merged.append(s)
-    return merged
+# Rungs of intensity, in seconds between cues. The ladder is absolute time,
+# not beat divisions, because what a body can follow does not scale with tempo.
+RUNGS = [4.0, 3.0, 2.0, 1.5, 1.0, 0.7, 0.5, 0.35, 0.25]
+
+
+def label_for(interval):
+    if interval <= 0:
+        return "rest"
+    if interval >= 2.5:
+        return "slow"
+    if interval >= 1.2:
+        return "steady"
+    if interval >= 0.6:
+        return "double"
+    return "fast"
+
+
+def session_arc(duration, energy, beats, rounds=3):
+    """Build rounds of climb, peak and rest rather than tracking the music.
+
+    A peak only reads as a peak against the valley before it, so each round
+    starts and finishes higher than the last while still dropping to nothing in
+    between: the baseline resets, and the next climb lands harder than it would
+    have from a standing start.
+    """
+    if duration < 90:
+        rounds = 1
+    elif duration < 240:
+        rounds = 2
+
+    # Where the track itself is loudest - peaks land better on those moments.
+    hot = []
+    if energy and beats:
+        span = max(1, len(energy) // 24)
+        for i in range(0, len(energy) - span, span):
+            hot.append((sum(energy[i:i + span]) / span, beats[i]))
+        hot.sort(reverse=True)
+
+    secs, t = [], 2.0
+    for r in range(rounds):
+        frac = r / max(1, rounds - 1) if rounds > 1 else 1.0
+        # ratchet: later rounds start further up the ladder and go further up it
+        lo = int(round(frac * 2))
+        hi = min(len(RUNGS) - 1, int(round(3 + frac * (len(RUNGS) - 4))))
+        rungs = RUNGS[lo:hi + 1] or [RUNGS[-1]]
+
+        climb = 55 + 15 * frac              # longer climbs later on
+        per = climb / max(1, len(rungs))
+        for iv in rungs:
+            if t + per > duration:
+                break
+            secs.append({"t": round(t, 2), "end": round(t + per, 2),
+                         "interval": iv, "pattern": label_for(iv)})
+            t += per
+
+        # hold at the top, then stop dead - the stop is the point
+        peak = 12 + 8 * frac
+        if t + peak <= duration:
+            secs.append({"t": round(t, 2), "end": round(t + peak, 2),
+                         "interval": rungs[-1], "pattern": label_for(rungs[-1]),
+                         "peak": True})
+            t += peak
+
+        rest = 55 - 10 * frac               # shorter recovery as it escalates
+        if r < rounds - 1 and t + rest <= duration:
+            secs.append({"t": round(t, 2), "end": round(t + rest, 2),
+                         "interval": 0.0, "pattern": "rest"})
+            t += rest
+        if t >= duration:
+            break
+    return secs
 
 
 def cues(beats, secs):
-    """Expand sections into the actual cue times the player renders."""
+    """Walk each section at its interval, snapping to the nearest real beat."""
     out = []
     for s in secs:
-        if s["div"] <= 0:
+        iv = s.get("interval", 0)
+        if iv <= 0:
             continue
-        idx = [i for i, t in enumerate(beats) if s["t"] <= t <= s["end"]]
-        if len(idx) < 2:
-            continue
-        # coarsen on fast tracks until the real spacing is playable
-        spacing = (beats[idx[-1]] - beats[idx[0]]) / max(1, len(idx) - 1)
-        step = s["div"]
-        while spacing * step < MIN_GAP:
-            step *= 2
-        s["div"] = step
-        if step >= 1:
-            for k, i in enumerate(idx):
-                if k % int(step) == 0:
-                    out.append({"t": round(beats[i], 3), "kind": s["pattern"]})
-        else:
-            sub = int(round(1 / step))
-            for j in range(len(idx) - 1):
-                a, b = beats[idx[j]], beats[idx[j + 1]]
-                for k in range(sub):
-                    out.append({"t": round(a + (b - a) * k / sub, 3),
-                                "kind": s["pattern"]})
+        t = s["t"]
+        while t <= s["end"]:
+            # snap so cues sit on the music rather than beside it
+            b = min(beats, key=lambda x: abs(x - t)) if beats else t
+            if abs(b - t) > iv * 0.5:
+                b = t
+            out.append({"t": round(b, 3), "kind": s["pattern"]})
+            t += iv
     out.sort(key=lambda c: c["t"])
-    # Coarsening by section average is not enough: detected beats jitter, so
-    # subdividing between two close beats can still land inside the floor.
-    # Enforce it on the finished list, where nothing can slip through.
     kept = []
     for c in out:
         if kept and c["t"] - kept[-1]["t"] < MIN_GAP:
@@ -178,7 +197,7 @@ def build(path, force=False):
         raise RuntimeError("only %d beats found" % len(beats))
     sig = decode(path)
     energy = energy_curve(sig, beats)
-    secs = sections(beats, energy)
+    secs = session_arc(len(sig) / SR, energy, beats)
     chart = {
         "title": os.path.splitext(os.path.basename(path))[0],
         "duration": round(len(sig) / SR, 2),
