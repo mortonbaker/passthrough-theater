@@ -23,6 +23,7 @@ BASE = "/srv/deovr"
 MEDIA_DIR = os.path.join(BASE, "media")
 THUMB_DIR = os.path.join(BASE, "thumbs")
 PLAYER_DIR = os.path.join(BASE, "player")
+MUSIC_DIR = os.path.join(BASE, "music")
 CACHE_PATH = os.path.join(BASE, "cache.json")
 PORT = 8250
 # WebXR only exists in a secure context, so the player also listens on HTTPS
@@ -349,6 +350,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.player_static(path)
             if path.startswith("/voice/"):
                 return self.voice_proxy(self.path, "GET")
+            if path == "/music":
+                return self.music_index()
+            if path.startswith("/track/"):
+                return self.track_file(urllib.parse.unquote(path[len("/track/"):]))
+            if path.startswith("/chart/"):
+                return self.chart_file(urllib.parse.unquote(path[len("/chart/"):]))
             if path == "/clientlog":
                 # the headset has no console; let the player report faults here
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -368,6 +375,55 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(500, str(exc))
             except Exception:
                 pass
+
+    AUDIO_EXT = (".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg")
+
+    def music_index(self):
+        """Tracks that have a chart beside them, newest first."""
+        out = []
+        if os.path.isdir(MUSIC_DIR):
+            for name in sorted(os.listdir(MUSIC_DIR)):
+                if not name.lower().endswith(self.AUDIO_EXT):
+                    continue
+                chart = os.path.join(MUSIC_DIR, os.path.splitext(name)[0] + ".chart.json")
+                item = {"name": name, "charted": os.path.isfile(chart),
+                        "url": "/track/" + urllib.parse.quote(name)}
+                if item["charted"]:
+                    try:
+                        with open(chart, encoding="utf-8") as fh:
+                            c = json.load(fh)
+                        item.update(title=c.get("title", name), bpm=c.get("bpm"),
+                                    duration=c.get("duration"),
+                                    cues=len(c.get("cues", [])),
+                                    chartUrl="/chart/" + urllib.parse.quote(name))
+                    except Exception:
+                        item["charted"] = False
+                out.append(item)
+        self.send_json({"tracks": out})
+
+    def track_file(self, name):
+        fp = os.path.join(MUSIC_DIR, os.path.basename(name))
+        if not os.path.isfile(fp):
+            return self.send_error(404, "no such track")
+        ext = os.path.splitext(fp)[1].lower()
+        ctype = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".opus": "audio/ogg",
+                 ".flac": "audio/flac", ".wav": "audio/wav",
+                 ".ogg": "audio/ogg"}.get(ext, "application/octet-stream")
+        return self.send_range(fp, ctype)
+
+    def chart_file(self, name):
+        base = os.path.splitext(os.path.basename(name))[0]
+        fp = os.path.join(MUSIC_DIR, base + ".chart.json")
+        if not os.path.isfile(fp):
+            return self.send_error(404, "no chart")
+        with open(fp, "rb") as fh:
+            data = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def player_static(self, path):
         """Serve the WebXR player. Modules need a JS MIME type or Chromium refuses them."""
@@ -611,6 +667,10 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
         fp = os.path.join(MEDIA_DIR, os.path.basename(name))
         if not os.path.isfile(fp):
             return self.send_error(404, "no such file")
+        return self.send_range(fp, "video/mp4")
+
+    def send_range(self, fp, ctype):
+        """Byte-range file serving, shared by video and audio."""
         size = os.path.getsize(fp)
         rng = self.headers.get("Range")
         start, end = 0, size - 1
@@ -637,7 +697,7 @@ p{color:#888;margin:0 0 24px}code{color:#6cf}
 
         length = end - start + 1
         self.send_response(206 if partial else 200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
         if partial:
