@@ -1054,6 +1054,11 @@ function buildHighway(){
   rhyNotes.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(96*3), 3);
   rhyNotes.renderOrder = 8;
   rhyNotes.count = 0;
+  // An InstancedMesh is frustum-culled by its BASE geometry's bounding sphere,
+  // a ~18cm disc at the group origin — the wearer's head — while the instances
+  // live 1.45m away on the lane. Lean off the anchor and the whole mesh culls:
+  // notes counted, never rendered. Never cull meshes whose instances roam.
+  rhyNotes.frustumCulled = false;
   rhyRoot.add(rhyNotes);
 
   // impact bursts at the hit line: same vertexColors arrangement as the notes,
@@ -1067,6 +1072,7 @@ function buildHighway(){
   rhyBursts.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(12*3), 3);
   rhyBursts.renderOrder = 9;
   rhyBursts.count = 0;
+  rhyBursts.frustumCulled = false;       // same trap as the notes
   rhyRoot.add(rhyBursts);
 
   // spectrum bars along the foot of the lane
@@ -1075,6 +1081,7 @@ function buildHighway(){
     opacity:0.85, depthTest:false, depthWrite:false, side:THREE.DoubleSide});
   rhyBars = new THREE.InstancedMesh(barGeo, barMat, RHY.bars);
   rhyBars.renderOrder = 7;
+  rhyBars.frustumCulled = false;         // survives today only by geometry luck
   rhyRoot.add(rhyBars);
 
   rhyRoot.visible = false;
