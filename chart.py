@@ -275,6 +275,33 @@ def downbeat_phase(beats, strength):
 # syncopation: 4 = one per bar, 1 = every beat, 0.5 = eighths.
 MULTIPLES = [8.0, 4.0, 2.0, 1.0, 0.5]
 
+# A bar is four beats; a phrase is a loop of bars; each bar lists the beat
+# positions that get a cue (x.5 = the offbeat after that beat). A uniform
+# stream reads as a metronome — the gaps and answers are what make a rhythm
+# graspable — so every density carries holes and a recurring shape.
+PHRASES = {
+    8.0: [[0], [], [0], [2]],
+    4.0: [[0], [0], [0], [0, 2]],
+    2.0: [[0, 2], [0, 2, 3], [0, 2], [0]],
+    # the yellow tier: settle into every beat, then every once in a while one
+    # offbeat or one dropped beat — acceleration without overwhelm
+    1.0: [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 2.5, 3], [0, 1, 2, 3],
+          [0, 2, 3], [0, 1, 2, 3], [0, 1, 2, 2.5, 3], [0, 1, 3]],
+}
+# The red tier is an arc, not a stream: on-off pairs with air between them,
+# the pairs closing up, a crescendo of straight eighths, a dead bar, then a
+# syncopated resume. Eighth version for tempos whose offbeat clears MIN_GAP;
+# faster tracks get the same shape told in whole beats.
+FAST_8TH = [[0, 0.5], [2, 2.5], [0, 0.5, 2, 2.5],
+            [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+            [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+            [],
+            [0, 1, 2, 2.5], [0, 0.5, 1, 1.5, 2, 2.5]]
+FAST_BEAT = [[0, 1], [2, 3], [0, 1, 3],
+             [0, 1, 2, 3], [0, 1, 2, 3],
+             [],
+             [0, 2, 3], [0, 1, 2, 3]]
+
 
 def cues(beats, hits, secs, phase=0):
     """Place cues on metrical positions, not on a stopwatch.
@@ -310,6 +337,14 @@ def cues(beats, hits, secs, phase=0):
         mult = min(MULTIPLES, key=lambda m: abs(m * spacing - iv))
         sec["beats_per_cue"] = mult
 
+        # phrase for this section: the red tier gets its scripted arc (which is
+        # also what keeps it distinct from yellow at tempos where both densities
+        # collapse to "every beat"); everything else phrases at its density
+        if sec.get("pattern") == "fast":
+            phrase = FAST_8TH if spacing / 2 >= MIN_GAP else FAST_BEAT
+        else:
+            phrase = PHRASES.get(mult) or PHRASES[1.0]
+
         # first beat of the section that starts a bar
         i0 = 0
         while i0 < len(beats) and beats[i0] < sec["t"]:
@@ -317,22 +352,24 @@ def cues(beats, hits, secs, phase=0):
         while i0 < len(beats) and (i0 % 4) != phase:
             i0 += 1
 
-        if mult >= 1:
-            step = int(mult)
-            i = i0
-            while i < len(beats) and beats[i] <= sec["end"]:
-                out.append({"t": round(beats[i], 3), "kind": sec["pattern"]})
-                i += step
-        else:                                  # eighths: beat plus its midpoint
-            i = i0
-            while i + 1 < len(beats) and beats[i] <= sec["end"]:
-                a, b = beats[i], beats[i + 1]
-                out.append({"t": round(a, 3), "kind": sec["pattern"]})
-                mid = a + (b - a) / 2
-                # only subdivide where something actually plays on the offbeat
-                if mid <= sec["end"] and has_hit(mid, spacing * 0.22):
-                    out.append({"t": round(mid, 3), "kind": sec["pattern"]})
-                i += 1
+        i, k = i0, 0
+        while i < len(beats) and beats[i] <= sec["end"]:
+            for pos in phrase[k % len(phrase)]:
+                bi = i + int(pos)
+                if bi >= len(beats):
+                    break
+                t = beats[bi]
+                if pos % 1:                    # offbeat: midpoint to next beat
+                    if bi + 1 >= len(beats):
+                        continue
+                    t = t + (beats[bi + 1] - t) / 2
+                    # only syncopate where something actually plays there
+                    if not has_hit(t, spacing * 0.22):
+                        continue
+                if sec["t"] <= t <= sec["end"]:
+                    out.append({"t": round(t, 3), "kind": sec["pattern"]})
+            i += 4
+            k += 1
 
     out.sort(key=lambda c: c["t"])
     kept = []
