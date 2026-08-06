@@ -331,6 +331,7 @@ def plan(charts, minutes=7.0):
         out.append({
             "name": c["name"], "title": c["title"], "bpm": c["bpm"],
             "duration": c["duration"], "tier": round(tier, 2),
+            "grooveStart": c.get("grooveStart", 0.0),
             "label": ["warm up", "building", "relentless"][
                 min(2, int(tier * 2.99))],
             "sections": secs,
