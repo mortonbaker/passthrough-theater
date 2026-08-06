@@ -118,7 +118,9 @@ def session_arc(duration, energy, beats, rounds=3):
     """
     # Budget by what time there is, so every round completes rather than the
     # last one being cut off mid-climb.
-    rounds = max(1, min(4, int(duration // 110)))
+    # ~90s buys a climb, a hold and a recovery, so a 3 minute track gets a
+    # genuine valley rather than one unbroken ramp.
+    rounds = max(1, min(4, int(duration // 90)))
 
     secs, t = [], 2.0
     budget = (duration - 4.0) / rounds
