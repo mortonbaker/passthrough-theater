@@ -59,6 +59,83 @@ def decode(path):
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def onsets_of(path):
+    """Percussive attacks. 'specflux' fires on transients, which is what a drum
+    is; the tempo tracker alone happily emits beats through a silent intro."""
+    import aubio
+    hop = 256
+    src = aubio.source(path, SR, hop)
+    det = aubio.onset("specflux", 1024, hop, SR)
+    det.set_threshold(0.35)
+    out = []
+    while True:
+        samples, read = src()
+        if det(samples):
+            out.append(det.get_last_s())
+        if read < hop:
+            break
+    return out
+
+
+def percussive_strength(sig, beats):
+    """Energy in the kick and snare/hat bands at each beat.
+
+    A beat with no drum under it has little of either, which is how an intro or
+    a breakdown gets told apart from the same grid position in a full section.
+    """
+    if not beats:
+        return []
+    win = int(0.08 * SR)
+    freqs = np.fft.rfftfreq(win, 1.0 / SR)
+    kick = (freqs >= 40) & (freqs <= 140)
+    snare = (freqs >= 1500) & (freqs <= 9000)
+    w = np.hanning(win)
+    out = []
+    for t in beats:
+        a = int(t * SR)
+        seg = sig[a:a + win]
+        if seg.size < win:
+            out.append(0.0)
+            continue
+        mag = np.abs(np.fft.rfft(seg * w))
+        out.append(float(mag[kick].sum() + mag[snare].sum()))
+    arr = np.array(out)
+    hi = np.percentile(arr, 90) or 1.0
+    return np.clip(arr / hi, 0, 1).tolist()
+
+
+def percussive_beats(beats, onsets, strength, thresh=0.22, window=0.07):
+    """Keep only beats with a real attack on them."""
+    keep = []
+    oi = 0
+    for i, t in enumerate(beats):
+        while oi < len(onsets) - 1 and onsets[oi] < t - window:
+            oi += 1
+        near = any(abs(onsets[j] - t) <= window
+                   for j in range(max(0, oi - 2), min(len(onsets), oi + 3)))
+        if near and strength[i] >= thresh:
+            keep.append(t)
+    return keep
+
+
+def first_groove(beats, keep, run=6):
+    """Where the drums actually start: the first sustained run of hit beats."""
+    if not keep:
+        return beats[0] if beats else 0.0
+    ks = set(keep)
+    streak, start = 0, None
+    for t in beats:
+        if t in ks:
+            if streak == 0:
+                start = t
+            streak += 1
+            if streak >= run:
+                return start
+        else:
+            streak = 0
+    return keep[0]
+
+
 def beats_of(path):
     """Beat times and tempo from aubio."""
     import aubio
@@ -108,7 +185,7 @@ def label_for(interval):
     return "fast"
 
 
-def session_arc(duration, energy, beats, rounds=3):
+def session_arc(duration, energy, beats, rounds=3, start=2.0):
     """Build rounds of climb, peak and rest rather than tracking the music.
 
     A peak only reads as a peak against the valley before it, so each round
@@ -120,10 +197,11 @@ def session_arc(duration, energy, beats, rounds=3):
     # last one being cut off mid-climb.
     # ~90s buys a climb, a hold and a recovery, so a 3 minute track gets a
     # genuine valley rather than one unbroken ramp.
+    duration = max(0.0, duration - start)
     rounds = max(1, min(4, int(duration // 90)))
 
-    secs, t = [], 2.0
-    budget = (duration - 4.0) / rounds
+    secs, t = [], start
+    budget = (duration - 2.0) / rounds
     for r in range(rounds):
         frac = r / max(1, rounds - 1) if rounds > 1 else 1.0
         last = (r == rounds - 1)
@@ -159,6 +237,8 @@ def session_arc(duration, energy, beats, rounds=3):
 
 
 def cues(beats, secs):
+    # 'beats' here is already filtered to beats with a drum on them, so a
+    # cue can never land in a passage with nothing to hit.
     """Walk each section at its interval, snapping to the nearest real beat."""
     out = []
     for s in secs:
@@ -191,15 +271,23 @@ def build(path, force=False):
         raise RuntimeError("only %d beats found" % len(beats))
     sig = decode(path)
     energy = energy_curve(sig, beats)
-    secs = session_arc(len(sig) / SR, energy, beats)
+    onsets = onsets_of(path)
+    strength = percussive_strength(sig, beats)
+    hits = percussive_beats(beats, onsets, strength)
+    if len(hits) < 8:                     # nothing percussive: fall back
+        hits = beats
+    start = first_groove(beats, hits)
+    secs = session_arc(len(sig) / SR, energy, hits, start=start)
     chart = {
         "title": os.path.splitext(os.path.basename(path))[0],
         "duration": round(len(sig) / SR, 2),
         "bpm": round(bpm, 2),
         "beats": [round(b, 3) for b in beats],
+        "hits": [round(b, 3) for b in hits],
+        "grooveStart": round(start, 2),
         "energy": [round(e, 3) for e in energy],
         "sections": secs,
-        "cues": cues(beats, secs),
+        "cues": cues(hits, secs),
     }
     with open(dest, "w", encoding="utf-8") as fh:
         json.dump(chart, fh, indent=1)
