@@ -72,6 +72,11 @@ let ctx=null, src=null, gain=null, analyser=null, freq=null;
 let buffer=null, chart=null, startAt=0, playing=false, offset=0;
 let tracks=[], idx=-1, lead=2.6, noteSize=14, vol=0.8;
 let session=null, sIdx=-1, gap=10, gapUntil=0, stage='', gapTimer=null;
+// Impact bursts at the strike line. Guitar Hero grammar: a hit terminates AT
+// the line with a flame; only a MISS slides past it. With no input yet, every
+// cue "hits" at its exact time, so the burst is the beat made visible.
+const FX_AGE = 0.28;
+let fxChart=null, fxIdx=0, fxList=[], fxLastT=0;
 
 async function load(){
   try {
@@ -234,9 +239,20 @@ function frame(){
         c.beginPath(); c.moveTo(laneX, y); c.lineTo(laneX+laneW, y); c.stroke();
       }
     }
+    // advance the impact pointer: every cue whose time has passed becomes a
+    // burst (recent ones only — after a seek the backlog is skipped silently)
+    if (fxChart !== chart){ fxChart = chart; fxList = []; fxIdx = 0; }
+    if (t < fxLastT - 0.25) fxIdx = 0;
+    fxLastT = t;
+    while (fxIdx < chart.cues.length && chart.cues[fxIdx].t <= t){
+      const q = chart.cues[fxIdx++];
+      if (t - q.t < FX_AGE) fxList.push({t: q.t, kind: q.kind});
+    }
+    fxList = fxList.filter(e => t - e.t < FX_AGE && t >= e.t - 0.001);
+
     for (const q of chart.cues){
       const dt = q.t - t;
-      if (dt < -0.15) continue;
+      if (dt < 0) continue;          // the note ends AT the line; the burst takes over
       if (dt > lead) break;
       inWindow++;
       const y = hitY - (dt/lead) * (hitY - topY);
@@ -251,9 +267,35 @@ function frame(){
     }
   }
 
-  // hit line
-  c.strokeStyle = '#ffffff'; c.lineWidth = 3*dpr;
+  // impact bursts: expand outward and fade, mostly transparent so incoming
+  // notes stay readable behind them
+  let lineGlow = 0;
+  if (playing) for (const e of fxList){
+    const a = (t - e.t) / FX_AGE;               // 0 fresh → 1 gone
+    lineGlow = Math.max(lineGlow, 1 - a);
+    const w = laneW * (0.86 + 0.55*a);
+    const h = noteSize * dpr * (1.15 - 0.65*a);
+    c.fillStyle = KIND[e.kind] || '#fff';
+    c.globalAlpha = 0.8 * (1 - a);
+    c.beginPath();
+    c.roundRect(laneX + (laneW - w)/2, hitY - h/2, w, h, h/2);
+    c.fill();
+    c.strokeStyle = '#ffffff';
+    c.globalAlpha = 0.55 * (1 - a);
+    c.lineWidth = 2.5*dpr;
+    const g = 9*dpr*a;                          // ring detaching from the bar
+    c.beginPath();
+    c.roundRect(laneX + (laneW - w)/2 - g, hitY - h/2 - g, w + 2*g, h + 2*g, h);
+    c.stroke();
+    c.globalAlpha = 1;
+  }
+
+  // hit line — thickens and glows with each impact
+  c.save();
+  if (lineGlow){ c.shadowColor = '#ffffff'; c.shadowBlur = 26*lineGlow*dpr; }
+  c.strokeStyle = '#ffffff'; c.lineWidth = (3 + 4*lineGlow)*dpr;
   c.beginPath(); c.moveTo(laneX - 20*dpr, hitY); c.lineTo(laneX + laneW + 20*dpr, hitY); c.stroke();
+  c.restore();
 
   // spectrum under the hit line
   if (analyser && playing){

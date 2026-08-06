@@ -811,7 +811,12 @@ async function saveSidecar(){
 // and the music can both agree on.
 let rhyCtx=null, rhySrc=null, rhyGain=null, rhyAnalyser=null, rhyFreq=null;
 let rhyBuffer=null, rhyChart=null, rhyStartAt=0, rhyPlaying=false;
-let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null;
+let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null, rhyBursts=null;
+// Impact bursts at the strike line, Guitar Hero grammar: a hit terminates AT
+// the line with a flame; only a miss slides past. No input yet, so every cue
+// "hits" at its exact time — the burst is the beat made visible.
+const RHY_FX_AGE = 0.28;
+let rhyFx=[], rhyFxIdx=0, rhyFxChart=null, rhyFxLastT=0;
 let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='', rhyNotedOnce=false;
 let musicVol = parseFloat(localStorage.getItem('musicVol') || '0.8');
 // session mode: rhyRun is a generation token — bumped on every start/stop, so a
@@ -1031,6 +1036,19 @@ function buildHighway(){
   rhyNotes.count = 0;
   rhyRoot.add(rhyNotes);
 
+  // impact bursts at the hit line: same vertexColors arrangement as the notes,
+  // so remember the white 'color' attribute or they render black (bug 2)
+  const fxGeo = new THREE.PlaneGeometry(RHY.laneW * 0.86, RHY.noteH * 1.15);
+  fxGeo.setAttribute('color',
+    new THREE.BufferAttribute(new Float32Array(fxGeo.attributes.position.count * 3).fill(1), 3));
+  const fxMat = new THREE.MeshBasicMaterial({transparent:true, depthTest:false,
+    depthWrite:false, side:THREE.DoubleSide, vertexColors:true});
+  rhyBursts = new THREE.InstancedMesh(fxGeo, fxMat, 12);
+  rhyBursts.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(12*3), 3);
+  rhyBursts.renderOrder = 9;
+  rhyBursts.count = 0;
+  rhyRoot.add(rhyBursts);
+
   // spectrum bars along the foot of the lane
   const barGeo = new THREE.PlaneGeometry(RHY.laneW/RHY.bars * 0.7, 1);
   const barMat = new THREE.MeshBasicMaterial({color:0x3d8bff, transparent:true,
@@ -1068,10 +1086,21 @@ function updateHighway(){
   let n = 0;
   if (rhyChart && rhyPlaying){
     const cues = rhyChart.cues;
+    // advance the impact pointer: every cue whose time has passed becomes a
+    // burst (recent ones only — after a seek the backlog is skipped silently)
+    if (rhyFxChart !== rhyChart){ rhyFxChart = rhyChart; rhyFx = []; rhyFxIdx = 0; }
+    if (t < rhyFxLastT - 0.25) rhyFxIdx = 0;
+    rhyFxLastT = t;
+    while (rhyFxIdx < cues.length && cues[rhyFxIdx].t <= t){
+      const q = cues[rhyFxIdx++];
+      if (t - q.t < RHY_FX_AGE) rhyFx.push({t: q.t, kind: q.kind});
+    }
+    rhyFx = rhyFx.filter(e => t - e.t < RHY_FX_AGE && t >= e.t - 0.001);
+
     // cues are sorted, so walk only the visible window
     for (let i = 0; i < cues.length && n < 96; i++){
       const dt = cues[i].t - t;
-      if (dt < -0.15) continue;
+      if (dt < 0) continue;          // the note ends AT the line; the burst takes over
       if (dt > RHY.lead) break;
       const y = -0.35 + (dt / RHY.lead) * RHY.laneH;
       _p.set(0, y, -RHY.dist + 0.004);
@@ -1091,6 +1120,35 @@ function updateHighway(){
   if (n){
     rhyNotes.instanceMatrix.needsUpdate = true;
     if (rhyNotes.instanceColor) rhyNotes.instanceColor.needsUpdate = true;
+  }
+
+  // impact bursts: expand outward and fade at the line; the line itself
+  // thickens with each hit so the beat lands even in peripheral vision
+  let glow = 0, nf = 0;
+  if (rhyBursts && rhyPlaying){
+    for (const e of rhyFx){
+      if (nf >= 12) break;
+      const a = (t - e.t) / RHY_FX_AGE;         // 0 fresh → 1 gone
+      glow = Math.max(glow, 1 - a);
+      _p.set(0, -0.35, -RHY.dist + 0.005);
+      _s.set(1 + 0.6*a, 1.15 - 0.7*a, 1);
+      _m4.compose(_p, _q, _s);
+      rhyBursts.setMatrixAt(nf, _m4);
+      _c.setHex(KIND_COLOR[e.kind] || 0xffffff);
+      rhyBursts.setColorAt(nf, _c.multiplyScalar(1 - a));
+      nf++;
+    }
+  }
+  if (rhyBursts){
+    rhyBursts.count = nf;
+    if (nf){
+      rhyBursts.instanceMatrix.needsUpdate = true;
+      if (rhyBursts.instanceColor) rhyBursts.instanceColor.needsUpdate = true;
+    }
+  }
+  if (rhyLine){
+    rhyLine.scale.y = 1 + 2.4*glow;
+    rhyLine.material.opacity = 0.9 + 0.1*glow;
   }
 
   // spectrum
