@@ -376,7 +376,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    AUDIO_EXT = (".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg")
+    # MeTube keeps the source container, so tracks arrive as .webm/.mkv;
+    # the browser decodes the audio stream out of them fine.
+    AUDIO_EXT = (".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg",
+                 ".webm", ".mkv", ".mp4")
 
     def music_index(self):
         """Tracks that have a chart beside them, newest first."""
@@ -407,8 +410,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404, "no such track")
         ext = os.path.splitext(fp)[1].lower()
         ctype = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".opus": "audio/ogg",
-                 ".flac": "audio/flac", ".wav": "audio/wav",
-                 ".ogg": "audio/ogg"}.get(ext, "application/octet-stream")
+                 ".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
+                 ".webm": "video/webm", ".mkv": "video/x-matroska",
+                 ".mp4": "video/mp4"}.get(ext, "application/octet-stream")
         return self.send_range(fp, ctype)
 
     def chart_file(self, name):
