@@ -34,6 +34,10 @@ KEY_FILE = os.path.join(BASE, "certs", "key.pem")
 # Optional voice assistant. The player is served over https, so it cannot call a
 # plain-http box directly (mixed content); we proxy instead. Unset to disable.
 VOICE_BRIDGE = os.environ.get("VOICE_BRIDGE", "http://192.168.0.168:8781")
+# Timed scene descriptions, one JSON per video, written by scenes_worker.py
+# (runs on spark). The voice proxy injects the entry at the current playback
+# time so the assistant knows what is on screen.
+SCENES_DIR = os.path.join(BASE, "scenes")
 
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".m4v", ".mov"}
 
@@ -363,6 +367,16 @@ class Handler(BaseHTTPRequestHandler):
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 print("CLIENT: " + (q.get("m", [""])[0])[:800], flush=True)
                 return self.send_json({"ok": True})
+            if path.startswith("/scenes/"):
+                return self.scenes_get(path[len("/scenes/"):])
+            if path == "/scenectx":
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                try:
+                    vt = float(q.get("vt", ["0"])[0] or 0)
+                except ValueError:
+                    vt = 0.0
+                return self.send_json(
+                    {"scene": self.scene_at(q.get("vid", [""])[0], vt)})
             if path.startswith("/video/"):
                 return self.detail(path[len("/video/"):])
             if path.startswith("/thumb/"):
@@ -504,6 +518,53 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def scene_at(self, vid, vt):
+        """The scene description covering playback time vt, or ''."""
+        vid = os.path.basename(vid or "")
+        if not vid:
+            return ""
+        try:
+            with open(os.path.join(SCENES_DIR, vid + ".json"),
+                      encoding="utf-8") as fh:
+                scenes = (json.load(fh) or {}).get("scenes") or []
+        except Exception:
+            return ""
+        best = ""
+        for s in scenes:                     # sorted by t; last one not ahead
+            if s.get("t", 0) <= vt + 1:
+                best = s.get("d", "")
+            else:
+                break
+        return best
+
+    def scenes_get(self, vid):
+        fp = os.path.join(SCENES_DIR, os.path.basename(vid) + ".json")
+        if not os.path.exists(fp):
+            return self.send_error(404, "no scenes")
+        with open(fp, "rb") as fh:
+            data = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def scenes_post(self, vid):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= (4 << 20):
+                return self.send_error(413, "bad size")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload.get("scenes"), list):
+                raise ValueError
+        except Exception:
+            return self.send_error(400, "bad json")
+        os.makedirs(SCENES_DIR, exist_ok=True)
+        fp = os.path.join(SCENES_DIR, os.path.basename(vid) + ".json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        self.send_json({"ok": True, "scenes": len(payload["scenes"])})
+
     def voice_proxy(self, path, method="POST"):
         """Forward voice traffic to the assistant box so the page stays same-origin."""
         if not VOICE_BRIDGE:
@@ -516,6 +577,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_error(413, "too large")
                 body = self.rfile.read(length) if length else b""
             target = VOICE_BRIDGE.rstrip("/") + path[len("/voice"):]
+            # ground the assistant: resolve vid+vt to the scene on screen and
+            # hand the text to the bridge alongside the audio
+            if path.startswith("/voice/talk"):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+                try:
+                    vt = float(q.get("vt", ["0"])[0] or 0)
+                except ValueError:
+                    vt = 0.0
+                scene = self.scene_at(q.get("vid", [""])[0], vt)
+                if scene:
+                    sep = "&" if "?" in target else "?"
+                    target += sep + "scene=" + urllib.parse.quote(scene[:700])
             req = urllib.request.Request(
                 target, data=body if method == "POST" else None, method=method,
                 headers={"Content-Type": self.headers.get("Content-Type") or
@@ -561,6 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path.startswith("/voice/"):
             return self.voice_proxy(self.path)
+        if path.startswith("/scenes/"):
+            return self.scenes_post(path[len("/scenes/"):])
         if not path.startswith("/sidecar/"):
             return self.send_error(404, "not found")
         vid = path[len("/sidecar/"):]

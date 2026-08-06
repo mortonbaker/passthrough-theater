@@ -789,7 +789,10 @@ async function sendVoice(){
   try {
     // a video can bind its own voice via the "voice" sidecar key
     const vq = (detail && detail.voice) ? '&voice='+encodeURIComponent(detail.voice) : '';
-    const r = await fetch('/voice/talk?sid='+SID+vq, {method:'POST', body:blob,
+    // vid + current time let the server ground the reply in the scene on screen
+    const sq = vidId ? '&vid=' + encodeURIComponent(vidId)
+      + '&vt=' + Math.floor((video && video.currentTime) || 0) : '';
+    const r = await fetch('/voice/talk?sid='+SID+vq+sq, {method:'POST', body:blob,
       headers:{'Content-Type': blob.type||'audio/webm'}});
     const j = await r.json();
     beacon('VOICE reply audio=' + (j.audio ? j.audio.length : 0)
