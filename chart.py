@@ -28,13 +28,21 @@ SR = 44100
 
 # Pattern vocabulary, slowest to fastest. "div" is beats per cue: 2 = every
 # other beat, 0.5 = twice a beat. Chosen by section intensity.
+# "div" is beats per cue: 4 = one cue every four beats, 0.5 = twice a beat.
+# The whole scale was one step too fast - four cues a beat is about 8.7 a
+# second at 130bpm, which nobody can follow. Two a beat is the practical
+# ceiling, so that is where the scale now tops out.
 PATTERNS = [
     {"name": "rest",   "div": 0.0},
-    {"name": "slow",   "div": 2.0},
-    {"name": "steady", "div": 1.0},
-    {"name": "double", "div": 0.5},
-    {"name": "fast",   "div": 0.25},
+    {"name": "slow",   "div": 4.0},
+    {"name": "steady", "div": 2.0},
+    {"name": "double", "div": 1.0},
+    {"name": "fast",   "div": 0.5},
 ]
+
+# Divisions alone are tempo-relative, so a fast track would still outrun the
+# ceiling. Cap the actual rate: no cue closer than this to the previous one.
+MIN_GAP = 0.22          # seconds, about 4.5 cues per second
 
 
 def decode(path):
@@ -130,9 +138,14 @@ def cues(beats, secs):
         if s["div"] <= 0:
             continue
         idx = [i for i, t in enumerate(beats) if s["t"] <= t <= s["end"]]
-        if not idx:
+        if len(idx) < 2:
             continue
+        # coarsen on fast tracks until the real spacing is playable
+        spacing = (beats[idx[-1]] - beats[idx[0]]) / max(1, len(idx) - 1)
         step = s["div"]
+        while spacing * step < MIN_GAP:
+            step *= 2
+        s["div"] = step
         if step >= 1:
             for k, i in enumerate(idx):
                 if k % int(step) == 0:
