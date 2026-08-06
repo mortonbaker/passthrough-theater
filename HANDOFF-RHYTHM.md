@@ -298,6 +298,37 @@ Lesson for the file: **the bench cannot catch three.js bugs** — it draws the
 same cue window on a flat canvas. Anything about meshes, materials,
 culling, or stereo needs the headset (or a WebXR-emulated browser run).
 
+## Addendum 6 — same day: scene transcripts ground the voice
+
+The operator asked for the companion to know what he is watching. Built as a
+batch pipeline, not live vision:
+
+- `scenes_worker.py` runs on **spark** (DGX, clone at
+  `~/Code/passthrough-theater`): one eye-cropped frame every 30 s per video,
+  fetched over the tailnet (**spark cannot reach atlas01's LAN address** —
+  use 100.127.143.78), captioned by
+  `huihui_ai/qwen2.5-vl-abliterated:7b-instruct` on spark's ollama
+  (~6–9 s/frame), POSTed to `/scenes/<id>`.
+- Server: GET/POST `/scenes/<id>` (JSON files in `/srv/deovr/scenes/`),
+  `GET /scenectx?vid=&vt=` for debugging, and the voice proxy resolves
+  vid+vt → scene text → `&scene=` param forwarded to the bridge.
+- **The live voice bridge is spark's `theater-voice.service`**
+  (whisper→ollama Stheno→chatterbox) — NOT studio-pc's voice_bridge.py; the
+  deovr unit sets `VOICE_BRIDGE=http://100.70.209.20:8781`. The bridge file
+  is tracked in-repo at `voice/server.py`; deploying it = `install` to
+  `~/theater-voice/server.py` on spark + `systemctl --user restart
+  theater-voice`. Never scp it from a Windows checkout (CRLF, lesson 7).
+  (Studio-pc's dormant bridge got the same scene support, harmlessly.)
+- Player sends `vid` + `vt` (floored currentTime) with every voice turn.
+- Verified end-to-end on the 5-min yuki film: 11 scenes, `/scenectx?vt=150`
+  returns the scene on screen at 2:30, bridge healthy on the grounded build.
+- Full-library batch on spark: log `~/theater-scenes/logs/batch.log`, ntfy
+  pings the operator on completion. A stray `.fs.*` temp file in the media
+  dir 404s and is skipped — harmless.
+
+Build `1786012205`. Headset test: play a transcribed video, ask Mariko about
+what's on screen.
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
