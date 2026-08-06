@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Highway bench</title>
+<style>
+*{box-sizing:border-box}
+body{background:#0b0b0e;color:#e8e8ee;font:14px/1.5 system-ui,sans-serif;margin:0;
+     display:flex;height:100vh;overflow:hidden}
+#left{width:340px;flex:none;border-right:1px solid #23232c;display:flex;flex-direction:column}
+#left h1{font-size:16px;margin:0;padding:14px 16px;border-bottom:1px solid #23232c}
+#tracks{overflow-y:auto;flex:1}
+.tr{padding:9px 16px;cursor:pointer;border-bottom:1px solid #17171e}
+.tr:hover{background:#1b1b23}
+.tr.on{background:#1d3a6b}
+.tr b{display:block;font-weight:500;font-size:13px}
+.tr span{color:#8a8a96;font-size:12px}
+#right{flex:1;display:flex;flex-direction:column;min-width:0}
+#bar{padding:10px 16px;border-bottom:1px solid #23232c;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+button{background:#2a6df4;color:#fff;border:0;border-radius:7px;padding:9px 18px;font-size:14px;cursor:pointer}
+button.g{background:#2c2c36}
+label{color:#9a9aa6;font-size:12px;display:flex;gap:6px;align-items:center}
+input[type=range]{width:120px}
+#stage{flex:1;position:relative;min-height:0}
+canvas{display:block;width:100%;height:100%}
+#hud{position:absolute;left:14px;top:12px;font:12px/1.7 ui-monospace,monospace;
+     color:#9fe8b0;background:rgba(0,0,0,.55);padding:10px 13px;border-radius:8px;white-space:pre}
+#err{color:#f77;padding:0 16px}
+</style>
+</head>
+<body>
+<div id="left">
+  <h1>Highway bench</h1>
+  <div id="tracks">loading…</div>
+</div>
+<div id="right">
+  <div id="bar">
+    <button id="play">play</button>
+    <button id="stop" class="g">stop</button>
+    <label>lead <input id="lead" type="range" min="0.8" max="6" step="0.1" value="2.6"><span id="leadv">2.6s</span></label>
+    <label>note <input id="nsz" type="range" min="4" max="40" step="1" value="14"><span id="nszv">14</span></label>
+    <label>vol <input id="vol" type="range" min="0" max="1" step="0.02" value="0.8"></label>
+    <label><input id="grid" type="checkbox"> beat grid</label>
+  </div>
+  <div id="err"></div>
+  <div id="stage"><canvas id="cv"></canvas><div id="hud"></div></div>
+</div>
+
+<script type="module">
+const $ = i => document.getElementById(i);
+const fmt = s => { s=Math.max(0,s|0); return (s/60|0)+':'+String(s%60).padStart(2,'0'); };
+
+// Same vocabulary the chart generator emits, so what we tune here transfers.
+const KIND = {rest:'#555566', slow:'#38bdf8', steady:'#4ade80', double:'#fbbf24', fast:'#f87171'};
+
+let ctx=null, src=null, gain=null, analyser=null, freq=null;
+let buffer=null, chart=null, startAt=0, playing=false;
+let tracks=[], idx=-1, lead=2.6, noteSize=14, vol=0.8;
+
+async function load(){
+  try {
+    const j = await (await fetch('/music')).json();
+    tracks = (j.tracks||[]).filter(t => t.charted);
+    $('tracks').innerHTML = '';
+    tracks.forEach((t,i) => {
+      const d = document.createElement('div');
+      d.className = 'tr';
+      d.innerHTML = `<b>${t.title||t.name}</b><span>${Math.round(t.bpm||0)} bpm · ${fmt(t.duration||0)} · ${t.cues||0} cues</span>`;
+      d.onclick = () => pick(i);
+      $('tracks').appendChild(d);
+    });
+    if (!tracks.length) $('tracks').textContent = 'no charted tracks';
+  } catch(e){ $('err').textContent = 'library failed: ' + e.message; }
+}
+
+async function pick(i){
+  stop();
+  idx = i;
+  [...document.querySelectorAll('.tr')].forEach((e,k) => e.classList.toggle('on', k===i));
+  const t = tracks[i];
+  $('err').textContent = 'loading…';
+  try {
+    ctx = ctx || new (window.AudioContext||window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const [buf, ch] = await Promise.all([
+      fetch(t.url).then(r => r.arrayBuffer()).then(a => ctx.decodeAudioData(a)),
+      fetch(t.chartUrl).then(r => r.json()),
+    ]);
+    buffer = buf; chart = ch;
+    $('err').textContent = '';
+    play();
+  } catch(e){ $('err').textContent = 'load failed: ' + e.message; }
+}
+
+function play(){
+  if (!buffer) return;
+  stop();
+  src = ctx.createBufferSource(); src.buffer = buffer;
+  gain = ctx.createGain(); gain.gain.value = vol;
+  analyser = ctx.createAnalyser(); analyser.fftSize = 128;
+  analyser.smoothingTimeConstant = 0.75;
+  freq = new Uint8Array(analyser.frequencyBinCount);
+  src.connect(gain).connect(analyser).connect(ctx.destination);
+  const at = ctx.currentTime + 0.08;
+  src.start(at); startAt = at; playing = true;
+  src.onended = () => { playing = false; };
+}
+function stop(){
+  try { src && src.stop(); } catch(e){}
+  try { src && src.disconnect(); } catch(e){}
+  src = null; playing = false;
+}
+const now = () => playing ? ctx.currentTime - startAt : 0;
+
+$('play').onclick = () => buffer && play();
+$('stop').onclick = stop;
+$('lead').oninput = e => { lead = +e.target.value; $('leadv').textContent = lead.toFixed(1)+'s'; };
+$('nsz').oninput  = e => { noteSize = +e.target.value; $('nszv').textContent = noteSize; };
+$('vol').oninput  = e => { vol = +e.target.value; if (gain) gain.gain.value = vol; };
+
+// ---- render: same cue window as the VR highway, drawn flat ----
+const cv = $('cv'), c = cv.getContext('2d');
+function resize(){
+  const r = cv.parentElement.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+}
+addEventListener('resize', resize); resize();
+
+function frame(){
+  requestAnimationFrame(frame);
+  const W = cv.width, H = cv.height, dpr = devicePixelRatio;
+  c.clearRect(0,0,W,H);
+
+  const laneW = Math.min(W*0.42, 420*dpr);
+  const laneX = (W - laneW)/2;
+  const hitY  = H - 150*dpr;          // where notes must arrive
+  const topY  = 60*dpr;
+
+  // lane
+  c.fillStyle = 'rgba(16,16,24,0.9)';
+  c.fillRect(laneX, topY, laneW, hitY - topY);
+  c.strokeStyle = '#2a2a36'; c.lineWidth = 2*dpr;
+  c.strokeRect(laneX, topY, laneW, hitY - topY);
+
+  const t = now();
+  let n = 0, inWindow = 0;
+
+  if (chart && playing){
+    // optional raw beat grid, to see detection independently of the patterns
+    if ($('grid').checked){
+      c.strokeStyle = 'rgba(255,255,255,0.13)'; c.lineWidth = 1*dpr;
+      for (const b of chart.beats){
+        const dt = b - t;
+        if (dt < 0 || dt > lead) continue;
+        const y = hitY - (dt/lead) * (hitY - topY);
+        c.beginPath(); c.moveTo(laneX, y); c.lineTo(laneX+laneW, y); c.stroke();
+      }
+    }
+    for (const q of chart.cues){
+      const dt = q.t - t;
+      if (dt < -0.15) continue;
+      if (dt > lead) break;
+      inWindow++;
+      const y = hitY - (dt/lead) * (hitY - topY);
+      const h = noteSize * dpr;
+      c.fillStyle = KIND[q.kind] || '#fff';
+      c.globalAlpha = Math.min(1, (1 - dt/lead) * 1.2 + 0.55);
+      c.beginPath();
+      c.roundRect(laneX + laneW*0.09, y - h/2, laneW*0.82, h, h/2);
+      c.fill();
+      c.globalAlpha = 1;
+      n++;
+    }
+  }
+
+  // hit line
+  c.strokeStyle = '#ffffff'; c.lineWidth = 3*dpr;
+  c.beginPath(); c.moveTo(laneX - 20*dpr, hitY); c.lineTo(laneX + laneW + 20*dpr, hitY); c.stroke();
+
+  // spectrum under the hit line
+  if (analyser && playing){
+    analyser.getByteFrequencyData(freq);
+    const bars = 24, step = Math.max(1, (freq.length/bars)|0);
+    for (let i=0;i<bars;i++){
+      let s=0; for (let k=0;k<step;k++) s += freq[i*step+k]||0;
+      const v = (s/step)/255, bw = laneW/bars*0.7;
+      c.fillStyle = '#3d8bff';
+      c.fillRect(laneX + i*(laneW/bars), hitY + 16*dpr, bw, Math.max(2*dpr, v*110*dpr));
+    }
+  }
+
+  // current section
+  let sec = null;
+  if (chart) for (const s of chart.sections) if (t >= s.t && t <= s.end) sec = s;
+
+  $('hud').textContent =
+    'time      ' + t.toFixed(2) + ' s\n' +
+    'playing   ' + playing + '\n' +
+    'cues      ' + (chart ? chart.cues.length : 0) + '\n' +
+    'in window ' + inWindow + '   drawn ' + n + '\n' +
+    'lead      ' + lead.toFixed(1) + ' s\n' +
+    'section   ' + (sec ? sec.pattern + '  div=' + sec.div + '  e=' + sec.energy : '—') + '\n' +
+    'bpm       ' + (chart ? chart.bpm : '—');
+}
+frame();
+load();
+</script>
+</body>
+</html>

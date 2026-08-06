@@ -46,12 +46,14 @@ echo "   none active"
 
 echo "== uploading =="
 if [ -d "$BASE" ]; then                      # running on the target itself
-  install -m 0644 "$HERE/player/index.html" "$BASE/player/index.html"
+  install -m 0644 "$HERE/player/index.html"   "$BASE/player/index.html"
+  install -m 0644 "$HERE/player/highway.html" "$BASE/player/highway.html"
   install -m 0755 "$HERE/deovr_server.py"   "$BASE/deovr_server.py"
   [ -f "$HERE/chart.py" ] && install -m 0755 "$HERE/chart.py" "$BASE/chart.py"
   sudo systemctl restart deovr && sleep 2 && systemctl is-active deovr
 else
-  scp -q -o BatchMode=yes "$HERE/player/index.html" "$HOST:$BASE/player/index.html"
+  scp -q -o BatchMode=yes "$HERE/player/index.html"   "$HOST:$BASE/player/index.html"
+  scp -q -o BatchMode=yes "$HERE/player/highway.html" "$HOST:$BASE/player/highway.html"
   scp -q -o BatchMode=yes "$HERE/deovr_server.py"   "$HOST:$BASE/deovr_server.py"
   [ -f "$HERE/chart.py" ] && scp -q -o BatchMode=yes "$HERE/chart.py" "$HOST:$BASE/chart.py"
   ssh -o BatchMode=yes "$HOST" "sudo systemctl restart deovr && sleep 2 && systemctl is-active deovr"
