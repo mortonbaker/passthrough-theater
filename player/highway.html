@@ -49,6 +49,17 @@ canvas{display:block;width:100%;height:100%}
 
 <script type="module">
 const $ = i => document.getElementById(i);
+function beacon(m){
+  try { navigator.sendBeacon('/clientlog?m=' + encodeURIComponent('BENCH ' + m)); } catch(e){}
+}
+function say(m, bad){
+  $('err').textContent = m;
+  $('err').style.color = bad ? '#f77' : '#7c7';
+  beacon((bad ? 'ERR ' : '') + m);
+}
+addEventListener('error', e => say('js error: ' + (e.message || e.error), true));
+addEventListener('unhandledrejection', e => say('rejected: ' + (e.reason && e.reason.message || e.reason), true));
+beacon('page loaded');
 const fmt = s => { s=Math.max(0,s|0); return (s/60|0)+':'+String(s%60).padStart(2,'0'); };
 
 // Same vocabulary the chart generator emits, so what we tune here transfers.
@@ -79,18 +90,22 @@ async function pick(i){
   idx = i;
   [...document.querySelectorAll('.tr')].forEach((e,k) => e.classList.toggle('on', k===i));
   const t = tracks[i];
-  $('err').textContent = 'loading…';
   try {
+    say('creating audio context…');
     ctx = ctx || new (window.AudioContext||window.webkitAudioContext)();
     if (ctx.state === 'suspended') await ctx.resume();
-    const [buf, ch] = await Promise.all([
-      fetch(t.url).then(r => r.arrayBuffer()).then(a => ctx.decodeAudioData(a)),
-      fetch(t.chartUrl).then(r => r.json()),
+    say('audio ' + ctx.state + ' · fetching ' + (t.title||t.name));
+    const [raw, ch] = await Promise.all([
+      fetch(t.url).then(r => { if (!r.ok) throw new Error('track HTTP ' + r.status); return r.arrayBuffer(); }),
+      fetch(t.chartUrl).then(r => { if (!r.ok) throw new Error('chart HTTP ' + r.status); return r.json(); }),
     ]);
+    say('decoding ' + (raw.byteLength/1048576).toFixed(1) + ' MB…');
+    // decodeAudioData rejects on formats the browser cannot open; report which
+    const buf = await ctx.decodeAudioData(raw);
     buffer = buf; chart = ch;
-    $('err').textContent = '';
+    say('playing · ' + buf.duration.toFixed(0) + 's · ' + ch.cues.length + ' cues');
     play();
-  } catch(e){ $('err').textContent = 'load failed: ' + e.message; }
+  } catch(e){ say('load failed: ' + (e && e.message || e), true); }
 }
 
 function play(){
@@ -113,7 +128,7 @@ function stop(){
 }
 const now = () => playing ? ctx.currentTime - startAt : 0;
 
-$('play').onclick = () => buffer && play();
+$('play').onclick = () => buffer ? play() : say('pick a track on the left first', true);
 $('stop').onclick = stop;
 $('lead').oninput = e => { lead = +e.target.value; $('leadv').textContent = lead.toFixed(1)+'s'; };
 $('nsz').oninput  = e => { noteSize = +e.target.value; $('nszv').textContent = noteSize; };
