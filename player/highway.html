@@ -36,8 +36,11 @@ canvas{display:block;width:100%;height:100%}
 </div>
 <div id="right">
   <div id="bar">
-    <button id="play">play</button>
+    <button id="session">start session</button>
+    <button id="play" class="g">play track</button>
     <button id="stop" class="g">stop</button>
+    <label>mins <input id="mins" type="number" min="3" max="20" value="7" style="width:52px"></label>
+    <label>gap <input id="gap" type="range" min="0" max="60" step="2" value="10"><span id="gapv">10s</span></label>
     <label>lead <input id="lead" type="range" min="0.8" max="6" step="0.1" value="2.6"><span id="leadv">2.6s</span></label>
     <label>note <input id="nsz" type="range" min="4" max="40" step="1" value="14"><span id="nszv">14</span></label>
     <label>vol <input id="vol" type="range" min="0" max="1" step="0.02" value="0.8"></label>
@@ -68,6 +71,7 @@ const KIND = {rest:'#555566', slow:'#38bdf8', steady:'#4ade80', double:'#fbbf24'
 let ctx=null, src=null, gain=null, analyser=null, freq=null;
 let buffer=null, chart=null, startAt=0, playing=false;
 let tracks=[], idx=-1, lead=2.6, noteSize=14, vol=0.8;
+let session=null, sIdx=-1, gap=10, gapUntil=0, stage='';
 
 async function load(){
   try {
@@ -128,8 +132,50 @@ function stop(){
 }
 const now = () => playing ? ctx.currentTime - startAt : 0;
 
+async function startSession(){
+  stopSession();
+  try {
+    say('planning session…');
+    const j = await (await fetch('/session?mins=' + ($('mins').value||7))).json();
+    if (j.error) return say('plan failed: ' + j.error, true);
+    session = j.tracks; sIdx = -1;
+    say('session: ' + j.minutes + ' min · ' + session.length + ' tracks');
+    nextInSession();
+  } catch(e){ say('session failed: ' + (e.message||e), true); }
+}
+function stopSession(){ session=null; sIdx=-1; stage=''; gapUntil=0; stop(); }
+
+async function nextInSession(){
+  if (!session) return;
+  sIdx++;
+  if (sIdx >= session.length){ say('session complete'); stopSession(); return; }
+  const t = session[sIdx];
+  stage = `${t.label} · ${sIdx+1}/${session.length}`;
+  try {
+    say(stage + ' · loading ' + t.title);
+    ctx = ctx || new (window.AudioContext||window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const raw = await fetch(t.url).then(r => r.arrayBuffer());
+    buffer = await ctx.decodeAudioData(raw);
+    // the session's own cue list, generated at this track's tier
+    chart = {title:t.title, bpm:t.bpm, duration:t.duration,
+             cues:t.cues, sections:t.sections, beats:[]};
+    say(stage + ' · ' + t.title);
+    play();
+    src.onended = () => {
+      playing = false;
+      if (!session) return;
+      // the gap between tracks is the valley: a real stop resets the baseline
+      gapUntil = performance.now() + gap*1000;
+      setTimeout(nextInSession, gap*1000);
+    };
+  } catch(e){ say('track failed: ' + (e.message||e), true); }
+}
+
+$('session').onclick = startSession;
+$('gap').oninput = e => { gap = +e.target.value; $('gapv').textContent = gap+'s'; };
 $('play').onclick = () => buffer ? play() : say('pick a track on the left first', true);
-$('stop').onclick = stop;
+$('stop').onclick = stopSession;
 $('lead').oninput = e => { lead = +e.target.value; $('leadv').textContent = lead.toFixed(1)+'s'; };
 $('nsz').oninput  = e => { noteSize = +e.target.value; $('nszv').textContent = noteSize; };
 $('vol').oninput  = e => { vol = +e.target.value; if (gain) gain.gain.value = vol; };
@@ -209,7 +255,12 @@ function frame(){
   let sec = null;
   if (chart) for (const s of chart.sections) if (t >= s.t && t <= s.end) sec = s;
 
+  const inGap = gapUntil && performance.now() < gapUntil;
   $('hud').textContent =
+    (session ? 'stage     ' + stage + '
+' : '') +
+    (inGap ? 'GAP       ' + ((gapUntil-performance.now())/1000).toFixed(0) + 's to next
+' : '') +
     'time      ' + t.toFixed(2) + ' s\n' +
     'playing   ' + playing + '\n' +
     'cues      ' + (chart ? chart.cues.length : 0) + '\n' +
