@@ -301,9 +301,14 @@ FAST_BEAT = [[0, 1], [2, 3], [0, 1, 3],
              [0, 1, 2, 3], [0, 1, 2, 3],
              [],
              [0, 2, 3], [0, 1, 2, 3]]
+# Yellow at half-note density: same settle-then-spice idea as the mult-1
+# phrase, told in halves. The 2.5 offs vanish on their own past ~136 bpm
+# (MIN_GAP), where the pickup-beat bars carry the variation instead.
+DOUBLE_HALF = [[0, 2], [0, 2], [0, 2, 2.5], [0, 2],
+               [0, 2], [0, 2, 3], [0, 2, 2.5], [0]]
 
 
-def cues(beats, hits, secs, phase=0):
+def cues(beats, hits, secs, phase=0, onsets=None):
     """Place cues on metrical positions, not on a stopwatch.
 
     Walking by absolute seconds drifts across the bar - 2.0s at 130bpm is 4.33
@@ -314,9 +319,14 @@ def cues(beats, hits, secs, phase=0):
     if len(beats) < 2:
         return []
     spacing = (beats[-1] - beats[0]) / max(1, len(beats) - 1)
-    hitset = sorted(hits or beats)
+    # Offbeats are gated on the raw onset list. Gating them on the percussive
+    # BEAT grid - as this once did - is a null gate: a midpoint can never sit
+    # on a beat, so no offbeat ever survived it.
+    hitset = sorted(onsets) if onsets else None
 
     def has_hit(t, tol):
+        if hitset is None:          # chart predates stored onsets: let it play
+            return True
         lo, hi = 0, len(hitset) - 1
         while lo <= hi:
             mid = (lo + hi) // 2
@@ -342,6 +352,8 @@ def cues(beats, hits, secs, phase=0):
         # collapse to "every beat"); everything else phrases at its density
         if sec.get("pattern") == "fast":
             phrase = FAST_8TH if spacing / 2 >= MIN_GAP else FAST_BEAT
+        elif sec.get("pattern") == "double":
+            phrase = DOUBLE_HALF if mult >= 2 else PHRASES[1.0]
         else:
             phrase = PHRASES.get(mult) or PHRASES[1.0]
 
@@ -434,7 +446,8 @@ def build(path, force=False):
         "energy": [round(e, 3) for e in energy],
         "sections": secs,
         "phase": phase,
-        "cues": cues(beats, hits, secs, phase),
+        "onsets": [round(o, 3) for o in onsets],
+        "cues": cues(beats, hits, secs, phase, onsets),
     }
     with open(dest, "w", encoding="utf-8") as fh:
         json.dump(chart, fh, indent=1)
@@ -480,7 +493,7 @@ def plan(charts, minutes=7.0):
                 min(2, int(tier * 2.99))],
             "sections": secs,
             "cues": cues(c.get("beats") or c["hits"], c["hits"],
-                         secs, c.get("phase", 0)),
+                         secs, c.get("phase", 0), c.get("onsets")),
         })
     return out
 
