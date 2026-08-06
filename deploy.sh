@@ -33,6 +33,17 @@ echo "== checking server syntax =="
   || { echo "server has a syntax error; not deploying" >&2; exit 1; }
 echo "   server OK"
 
+# A restart drops every in-flight connection: video stream, audio and beacons
+# all die at once. Heartbeats land every 5s while a session is live.
+echo "== checking for a live session =="
+LIVE=$(journalctl -u deovr --since "20 seconds ago" --no-pager -o cat 2>/dev/null | grep -ac HEARTBEAT || true)
+if [ "${LIVE:-0}" -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
+  echo "   a headset session is running ($LIVE recent heartbeats)." >&2
+  echo "   re-run with FORCE=1 to restart anyway." >&2
+  exit 1
+fi
+echo "   none active"
+
 echo "== uploading =="
 if [ -d "$BASE" ]; then                      # running on the target itself
   install -m 0644 "$HERE/player/index.html" "$BASE/player/index.html"

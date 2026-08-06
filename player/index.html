@@ -812,7 +812,7 @@ async function saveSidecar(){
 let rhyCtx=null, rhySrc=null, rhyGain=null, rhyAnalyser=null, rhyFreq=null;
 let rhyBuffer=null, rhyChart=null, rhyStartAt=0, rhyPlaying=false;
 let rhyRoot=null, rhyNotes=null, rhyBars=null, rhyLine=null;
-let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='';
+let rhyTracks=[], rhyTrackIdx=-1, rhyStatus='', rhyNotedOnce=false;
 let musicVol = parseFloat(localStorage.getItem('musicVol') || '0.8');
 
 const RHY = {
@@ -886,7 +886,7 @@ function rhyStart(){
   const at = rhyCtx.currentTime + 0.08;
   rhySrc.start(at);
   rhyStartAt = at;
-  rhyPlaying = true;
+  rhyPlaying = true; rhyNotedOnce = false;
   rhySrc.onended = () => { rhyPlaying = false; needDraw = true; };
   if (video) video.volume = videoVol * 0.35;      // music leads during a run
   beacon('RHY start');
@@ -925,6 +925,12 @@ function buildHighway(){
 
   // notes: one instanced mesh, repositioned per frame from the audio clock
   const noteGeo = new THREE.PlaneGeometry(RHY.laneW * 0.82, RHY.noteH);
+  // vertexColors is what makes the fragment shader apply vColor at all, but it
+  // also makes the vertex shader multiply by a per-vertex "color" attribute.
+  // Without one that reads as (0,0,0) and every note renders solid black.
+  const vcount = noteGeo.attributes.position.count;
+  noteGeo.setAttribute('color',
+    new THREE.BufferAttribute(new Float32Array(vcount * 3).fill(1), 3));
   const noteMat = new THREE.MeshBasicMaterial({transparent:true, depthTest:false,
     depthWrite:false, side:THREE.DoubleSide, vertexColors:true});
   rhyNotes = new THREE.InstancedMesh(noteGeo, noteMat, 96);
@@ -968,12 +974,14 @@ function updateHighway(){
       rhyNotes.setMatrixAt(n, _m4);
       _c.setHex(KIND_COLOR[cues[i].kind] || 0xffffff);
       // fade in at the far end so notes arrive rather than pop
-      const a = Math.min(1, (1 - dt / RHY.lead) * 1.8 + 0.15);
+      const a = Math.min(1, (1 - dt / RHY.lead) * 1.2 + 0.55);
       rhyNotes.setColorAt(n, _c.multiplyScalar(a));
       n++;
     }
   }
   rhyNotes.count = n;
+  if (rhyPlaying && n && !rhyNotedOnce){ rhyNotedOnce = true;
+    beacon('RHY notes visible=' + n + ' at t=' + t.toFixed(1)); }
   if (n){
     rhyNotes.instanceMatrix.needsUpdate = true;
     if (rhyNotes.instanceColor) rhyNotes.instanceColor.needsUpdate = true;
