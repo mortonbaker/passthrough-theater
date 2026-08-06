@@ -146,10 +146,19 @@ HIST = {}  # sid -> alternating user/assistant messages
 HIST_LOCK = threading.Lock()
 
 
-def chat(sid, text):
+def chat(sid, text, scene=""):
     with HIST_LOCK:
         hist = list(HIST.get(sid, []))
-    msgs = [{"role": "system", "content": persona()}] + hist + [{"role": "user", "content": text}]
+    sysmsg = persona()
+    # Scene grounding: the media server resolves the viewer's playback time to
+    # a scene-transcript entry and forwards it, so "this" means what is on
+    # screen. Rebuilt every turn - it tracks the video as it plays.
+    if scene:
+        sysmsg += ("\n\nOn the screen in front of them right now: " + scene
+                   + "\nWhen they talk about what they are watching, that is "
+                   "what they mean. React to it naturally and specifically, "
+                   "as if you are watching it together.")
+    msgs = [{"role": "system", "content": sysmsg}] + hist + [{"role": "user", "content": text}]
     r = requests.post(OLLAMA + "/api/chat", json={
         "model": MODEL, "messages": msgs, "stream": False,
         "options": {"temperature": 0.8, "num_ctx": 8192}}, timeout=180)
@@ -253,6 +262,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "bad length"}, 400)
         body = self.rfile.read(length)
         sid = (q.get("sid") or ["anon"])[0]
+        scene = (q.get("scene") or [""])[0][:900]
         ref = voice_path((q.get("voice") or [""])[0])
         if not ref:
             return self.send_json({"error": "no reference voices installed"})
@@ -263,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"you": heard or "", "reply": "", "audio": None,
                                    "more": False, "note": "nothing heard"})
         try:
-            reply = chat(sid, heard)
+            reply = chat(sid, heard, scene)
         except Exception as exc:
             return self.send_json({"you": heard, "error": "llm: %s" % exc})
         if not reply:
