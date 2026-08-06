@@ -442,7 +442,8 @@ def plan(charts, minutes=7.0):
             "label": ["warm up", "building", "relentless"][
                 min(2, int(tier * 2.99))],
             "sections": secs,
-    
+            "cues": cues(c.get("beats") or c["hits"], c["hits"],
+                         secs, c.get("phase", 0)),
         })
     return out
 

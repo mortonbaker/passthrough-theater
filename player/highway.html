@@ -163,8 +163,11 @@ async function nextInSession(){
     const raw = await fetch(t.url).then(r => r.arrayBuffer());
     buffer = await ctx.decodeAudioData(raw);
     // the session's own cue list, generated at this track's tier
+    if (!Array.isArray(t.cues)){
+      return say('track "' + t.title + '" has no cues in the plan', true);
+    }
     chart = {title:t.title, bpm:t.bpm, duration:t.duration,
-             cues:t.cues, sections:t.sections, beats:[]};
+             cues:t.cues, sections:t.sections || [], beats:[]};
     // start just before the drums: opening on a 25s ambient intro reads as
     // 'nothing is happening' rather than as a build
     const lead0 = Math.max(0, (t.grooveStart || 0) - 2.5);
