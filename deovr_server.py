@@ -352,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.voice_proxy(self.path, "GET")
             if path == "/music":
                 return self.music_index()
+            if path == "/session":
+                return self.session_plan()
             if path.startswith("/track/"):
                 return self.track_file(urllib.parse.unquote(path[len("/track/"):]))
             if path.startswith("/chart/"):
@@ -380,6 +382,52 @@ class Handler(BaseHTTPRequestHandler):
     # the browser decodes the audio stream out of them fine.
     AUDIO_EXT = (".mp3", ".m4a", ".opus", ".flac", ".wav", ".ogg",
                  ".webm", ".mkv", ".mp4")
+
+    def session_plan(self):
+        """An escalating run of tracks: calm first, relentless last.
+
+        The per-track charts already hold the analysis, so this is arithmetic
+        over cached hit times rather than a re-analysis.
+        """
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "chart", os.path.join(BASE, "chart.py"))
+            chart_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(chart_mod)
+        except Exception as exc:
+            return self.send_json({"error": "planner unavailable: %s" % exc}, 500)
+
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            minutes = max(2.0, min(30.0, float(q.get("mins", ["7"])[0])))
+        except ValueError:
+            minutes = 7.0
+
+        charts = []
+        if os.path.isdir(MUSIC_DIR):
+            for name in sorted(os.listdir(MUSIC_DIR)):
+                if not name.lower().endswith(self.AUDIO_EXT):
+                    continue
+                cp = os.path.join(MUSIC_DIR, os.path.splitext(name)[0] + ".chart.json")
+                if not os.path.isfile(cp):
+                    continue
+                try:
+                    with open(cp, encoding="utf-8") as fh:
+                        c = json.load(fh)
+                    c["name"] = name
+                    charts.append(c)
+                except Exception:
+                    pass
+        try:
+            plan = chart_mod.plan(charts, minutes)
+        except Exception as exc:
+            return self.send_json({"error": "plan failed: %s" % exc}, 500)
+
+        for p in plan:
+            p["url"] = "/track/" + urllib.parse.quote(p["name"])
+        total = sum(p["duration"] for p in plan)
+        self.send_json({"minutes": round(total / 60.0, 1), "tracks": plan})
 
     def music_index(self):
         """Tracks that have a chart beside them, newest first."""

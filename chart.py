@@ -185,7 +185,7 @@ def label_for(interval):
     return "fast"
 
 
-def session_arc(duration, energy, beats, rounds=3, start=2.0):
+def session_arc(duration, energy, beats, rounds=3, start=2.0, tier=1.0):
     """Build rounds of climb, peak and rest rather than tracking the music.
 
     A peak only reads as a peak against the valley before it, so each round
@@ -206,16 +206,20 @@ def session_arc(duration, energy, beats, rounds=3, start=2.0):
         frac = r / max(1, rounds - 1) if rounds > 1 else 1.0
         last = (r == rounds - 1)
 
-        # ratchet: start further up the ladder each round, and finish higher
-        lo = int(round(frac * 3))
-        hi = min(len(RUNGS) - 1, int(round(4 + frac * (len(RUNGS) - 5))))
-        if last:
-            hi = len(RUNGS) - 1          # the final round earns the top rung
+        # 'tier' places this track within the session: an early track works the
+        # bottom of the ladder, a late one the top. Within the track, the same
+        # ratchet applies round to round.
+        span = len(RUNGS) - 5
+        base = int(round(tier * span))
+        lo = min(len(RUNGS) - 2, base + int(round(frac * 2)))
+        hi = min(len(RUNGS) - 1, base + 4 + int(round(frac * 1)))
+        if last and tier >= 0.99:
+            hi = len(RUNGS) - 1          # only the final track earns the top rung
         rungs = RUNGS[lo:hi + 1] or [RUNGS[-1]]
 
-        # climb / hold / recover, as fractions of this round's slice
-        rest  = 0.0 if last else budget * 0.28
-        peak  = budget * 0.16
+        # climb / hold / recover. Recovery shortens as the session escalates.
+        rest  = 0.0 if last else budget * (0.34 - 0.14 * tier)
+        peak  = budget * (0.12 + 0.08 * tier)
         climb = budget - peak - rest
 
         per = climb / max(1, len(rungs))
@@ -292,6 +296,47 @@ def build(path, force=False):
     with open(dest, "w", encoding="utf-8") as fh:
         json.dump(chart, fh, indent=1)
     return chart
+
+
+def plan(charts, minutes=7.0):
+    """Order tracks into an escalating session and re-cue each at its tier.
+
+    Charts hold the expensive analysis already, so laying out a session is just
+    arithmetic over the stored hit times.
+    """
+    usable = [c for c in charts if c.get("hits") and c.get("duration")]
+    if not usable:
+        return []
+    # gentler tracks first: fewer percussive hits per second reads as calmer
+    def density(c):
+        return len(c["hits"]) / max(1.0, c["duration"])
+    usable.sort(key=density)
+
+    target, chosen, total = minutes * 60.0, [], 0.0
+    for c in usable:
+        if total >= target:
+            break
+        chosen.append(c)
+        total += c["duration"]
+    if len(chosen) < 2 and len(usable) > 1:
+        chosen = usable[:2]
+
+    # re-order so the calmest opens and the busiest closes
+    chosen.sort(key=density)
+    out = []
+    for i, c in enumerate(chosen):
+        tier = i / max(1, len(chosen) - 1)
+        secs = session_arc(c["duration"], c.get("energy") or [], c["hits"],
+                           start=c.get("grooveStart", 2.0), tier=tier)
+        out.append({
+            "name": c["name"], "title": c["title"], "bpm": c["bpm"],
+            "duration": c["duration"], "tier": round(tier, 2),
+            "label": ["warm up", "building", "relentless"][
+                min(2, int(tier * 2.99))],
+            "sections": secs,
+            "cues": cues(c["hits"], secs),
+        })
+    return out
 
 
 def main():
