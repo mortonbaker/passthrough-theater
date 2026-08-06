@@ -281,6 +281,23 @@ the logical open/closed state per panel. Build `1786010098`, plus:
   order on the flat page or via MeTube playlist folders; VR gets play, page,
   session. Planner-order question (density vs playlist order) still open.
 
+## Addendum 5 — same day: the invisible notes were frustum culling
+
+Operator, in the headset: no colored bars on the VR lane, only a white
+splash at the line and the EQ. The log discriminated it in one line —
+`RHY notes visible=1 at t=21.6` — notes were *placed and counted*, so they
+rendered invisibly rather than never existing. Cause: an `InstancedMesh` is
+frustum-culled by its **base geometry's** bounding sphere, which for a note
+is a ~18 cm disc at the group origin — the wearer's head — while the
+instances sit 1.45 m away on the lane. Lean off the anchor and three.js
+culls the whole mesh. The bursts shared the trap (hence line-pulse-only
+"splash"); the spectrum bars survived only because their base geometry is a
+metre tall. `frustumCulled = false` on all three. Build `1786010756`.
+
+Lesson for the file: **the bench cannot catch three.js bugs** — it draws the
+same cue window on a flat canvas. Anything about meshes, materials,
+culling, or stereo needs the headset (or a WebXR-emulated browser run).
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
