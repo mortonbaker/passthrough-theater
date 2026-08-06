@@ -45,14 +45,20 @@ rm -f "$TMP"
 if [ "$MODE" != "--sample" ]; then
   echo "== retiring original to masters/, carrying scenes sidecar if present"
   ssh "$ATLAS" "SRC=\"$SRC\" OUT=\"$OUT\" python3 - <<'PY'
-import json, os, shutil, urllib.request
+import json, os, shutil, urllib.parse, urllib.request
 src, out = os.environ['SRC'], os.environ['OUT']
 media, base = '/srv/deovr/media', '/srv/deovr'
 os.makedirs(os.path.join(base, 'masters'), exist_ok=True)
-# ids come from the server's own scan, keyed by title (filename sans ext)
+# ids keyed by REAL filename via each entry's media URL - titles are
+# prettified (underscores become spaces) and must never be used as filenames
+ids = {}
 lst = json.load(urllib.request.urlopen('http://127.0.0.1:8250/deovr'))['scenes'][0]['list']
-ids = {it['title']: it['video_url'].rsplit('/', 1)[-1] for it in lst}
-old, new = ids.get(os.path.splitext(src)[0]), ids.get(os.path.splitext(out)[0])
+for it in lst:
+    vid = it['video_url'].rsplit('/', 1)[-1]
+    d = json.load(urllib.request.urlopen('http://127.0.0.1:8250/video/' + vid))
+    fn = urllib.parse.unquote(d['encodings'][0]['videoSources'][0]['url'].rsplit('/', 1)[-1])
+    ids[fn] = vid
+old, new = ids.get(src), ids.get(out)
 sc = os.path.join(base, 'scenes')
 if old and new and os.path.exists(os.path.join(sc, old + '.json')):
     shutil.copyfile(os.path.join(sc, old + '.json'), os.path.join(sc, new + '.json'))
