@@ -116,51 +116,43 @@ def session_arc(duration, energy, beats, rounds=3):
     between: the baseline resets, and the next climb lands harder than it would
     have from a standing start.
     """
-    if duration < 90:
-        rounds = 1
-    elif duration < 240:
-        rounds = 2
-
-    # Where the track itself is loudest - peaks land better on those moments.
-    hot = []
-    if energy and beats:
-        span = max(1, len(energy) // 24)
-        for i in range(0, len(energy) - span, span):
-            hot.append((sum(energy[i:i + span]) / span, beats[i]))
-        hot.sort(reverse=True)
+    # Budget by what time there is, so every round completes rather than the
+    # last one being cut off mid-climb.
+    rounds = max(1, min(4, int(duration // 110)))
 
     secs, t = [], 2.0
+    budget = (duration - 4.0) / rounds
     for r in range(rounds):
         frac = r / max(1, rounds - 1) if rounds > 1 else 1.0
-        # ratchet: later rounds start further up the ladder and go further up it
-        lo = int(round(frac * 2))
-        hi = min(len(RUNGS) - 1, int(round(3 + frac * (len(RUNGS) - 4))))
+        last = (r == rounds - 1)
+
+        # ratchet: start further up the ladder each round, and finish higher
+        lo = int(round(frac * 3))
+        hi = min(len(RUNGS) - 1, int(round(4 + frac * (len(RUNGS) - 5))))
+        if last:
+            hi = len(RUNGS) - 1          # the final round earns the top rung
         rungs = RUNGS[lo:hi + 1] or [RUNGS[-1]]
 
-        climb = 55 + 15 * frac              # longer climbs later on
+        # climb / hold / recover, as fractions of this round's slice
+        rest  = 0.0 if last else budget * 0.28
+        peak  = budget * 0.16
+        climb = budget - peak - rest
+
         per = climb / max(1, len(rungs))
         for iv in rungs:
-            if t + per > duration:
-                break
             secs.append({"t": round(t, 2), "end": round(t + per, 2),
                          "interval": iv, "pattern": label_for(iv)})
             t += per
 
-        # hold at the top, then stop dead - the stop is the point
-        peak = 12 + 8 * frac
-        if t + peak <= duration:
-            secs.append({"t": round(t, 2), "end": round(t + peak, 2),
-                         "interval": rungs[-1], "pattern": label_for(rungs[-1]),
-                         "peak": True})
-            t += peak
+        secs.append({"t": round(t, 2), "end": round(t + peak, 2),
+                     "interval": rungs[-1], "pattern": label_for(rungs[-1]),
+                     "peak": True})
+        t += peak
 
-        rest = 55 - 10 * frac               # shorter recovery as it escalates
-        if r < rounds - 1 and t + rest <= duration:
+        if rest > 0:
             secs.append({"t": round(t, 2), "end": round(t + rest, 2),
                          "interval": 0.0, "pattern": "rest"})
             t += rest
-        if t >= duration:
-            break
     return secs
 
 
