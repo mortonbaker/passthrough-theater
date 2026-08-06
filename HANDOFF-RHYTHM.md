@@ -264,6 +264,23 @@ eighths · [] · [0,1,2,2.5]`, min gap 0.231 s; S3RL (178) runs the beat-told
 version; yellow shows the 2.5 spice. Build `1786008959`. Everything from
 addenda 1–3 still awaits the headset.
 
+## Addendum 4 — same day: menu fixes after first headset feedback
+
+Operator confirmed the rhythm feel ("spot on") and reported the `✕` bug was
+still real: it hid the lasers, never the menu. Root cause: input and canvas
+drawing were gated on `menuOn`, but nothing ever set the panel MESHES
+invisible. Meshes now follow `menuOn` every frame; `holder.visible` remains
+the logical open/closed state per panel. Build `1786010098`, plus:
+
+- **Grab pill** (SLR/Horizon-OS pattern): a visible grip pill at the top edge
+  of the bar and browse panels; point-hold carries the menu (the old
+  empty-space carry still works — the pill is the discoverable spot).
+- **Rhythm list pages**: prev/next + "page x/y · N tracks" under the rows;
+  all 14 tracks reachable; a running session flips to its track's page.
+- Playlists: deliberately NOT built in VR. Recommendation on record: curate
+  order on the flat page or via MeTube playlist folders; VR gets play, page,
+  session. Planner-order question (density vs playlist order) still open.
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
