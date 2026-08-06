@@ -202,6 +202,41 @@ Windows clones: `C:\Code\deovr-lan` is the documented local clone and made
 this commit. A duplicate accidentally cloned to `C:\Code\passthrough-theater`
 the same day was removed.
 
+## Addendum 2 — same day: impact bursts at the strike line
+
+Research pass on how Guitar Hero decides note placement (RBN/C3 authoring
+docs, customs-community guides, GH highway references), distilled:
+
+1. **Tempo map first** — a hand-authored beat map aligns the MIDI grid to the
+   song's real beats; everything else snaps to that grid (subdivisions: 1/1
+   down through 1/16 and triplets). Our aubio grid + `downbeat_phase` +
+   `MULTIPLES` is the same architecture, automated.
+2. **Charts are transcriptions** — gems follow what the instrument actually
+   plays, hand-charted per difficulty; lower tiers keep the strong beats and
+   drop subdivisions. Our percussive-hit filter and tier ladder mirror this;
+   the gap is that GH follows one musical line where we follow band energy.
+3. **Highway grammar** — beat lines (brighter at measures) ride the highway;
+   notes that reach the strike line and are hit **terminate there with a
+   flame**; only a **miss** slides past the line. A note running under the
+   line is the miss signal.
+
+Point 3 was the operator's complaint: every cue ran past the line into the
+spectrum bars — permanent-miss language. Build `1786007997`:
+
+- A note now dies exactly at its cue time. An impact burst takes over at the
+  line: kind-colored bar expanding outward with a detaching white ring, mostly
+  transparent so incoming notes stay readable, ~0.28 s life; the strike line
+  thickens and glows with each hit. Bench canvas and VR (12-instance pool,
+  same white-`color`-attribute trap as the notes), both timed off the audio
+  clock via a monotone cue pointer that resets on chart change or backward
+  seek.
+- Verified on the bench headlessly: burst frame captured mid-flare, notes
+  never render below the line, no client errors.
+
+Follow-ups the research suggests, not built: beat/measure lines riding the
+highway (session payload would need `beats`), real hit detection with
+differentiated hit-vs-miss feedback, an optional on-beat audio tick.
+
 Remaining open work, unchanged in substance:
 
 - **Planner ordering** — density over the *charted region* only, or the
